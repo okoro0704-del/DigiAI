@@ -6,6 +6,7 @@ import { privacyRank } from "../contracts/privacy.js";
 import { listCatalogModels, type ModelRecord } from "../registry/models.js";
 import { getProviderCatalog, PROVIDER_CATALOG, type ProviderCatalogRecord } from "../registry/providers.js";
 import type { IntelligenceProvider } from "../providers/types.js";
+import { ProviderPool } from "../providers/pool.js";
 import { decideRoute, type RouteDecision, type RuntimeProvider } from "./policy.js";
 
 export type RuntimeRegistry = {
@@ -36,7 +37,7 @@ function synthesizeCatalog(bound: IntelligenceProvider): ProviderCatalogRecord {
 
 function synthesizeModel(bound: IntelligenceProvider, catalog: ProviderCatalogRecord): ModelRecord {
   return {
-    id: bound.name === "openai" ? "gpt-4o-mini" : bound.name,
+    id: bound.name === "openai" ? "gpt-4o-mini" : bound.name === "gemini" ? "gemini-2.0-flash" : bound.name,
     providerId: catalog.id,
     capabilities: catalog.capabilities.length ? catalog.capabilities : [...TEXT_CAPABILITIES],
     modality: ["text"],
@@ -48,23 +49,28 @@ function synthesizeModel(bound: IntelligenceProvider, catalog: ProviderCatalogRe
   };
 }
 
-export function buildRuntimeRegistry(config: AppConfig, bound: IntelligenceProvider): RuntimeRegistry {
+export function asPool(bound: IntelligenceProvider | ProviderPool): ProviderPool {
+  return bound instanceof ProviderPool ? bound : new ProviderPool({ [bound.name]: bound });
+}
+
+export function buildRuntimeRegistry(config: AppConfig, bound: IntelligenceProvider | ProviderPool): RuntimeRegistry {
+  const pool = asPool(bound);
   const restrict = config.enabledProviders.length > 0;
-  const catalogs = PROVIDER_CATALOG.some((row) => row.id === bound.name)
-    ? PROVIDER_CATALOG
-    : [...PROVIDER_CATALOG, synthesizeCatalog(bound)];
+  const extra = pool.names().filter((name) => !PROVIDER_CATALOG.some((row) => row.id === name));
+  const catalogs = extra.length
+    ? [...PROVIDER_CATALOG, ...extra.map((name) => synthesizeCatalog(pool.get(name)!))]
+    : PROVIDER_CATALOG;
 
   const providers: RuntimeProvider[] = catalogs.map((catalog) => {
-    const isBound = bound.name === catalog.id;
-    const credentialPresent = isBound && bound.configured && catalog.id !== "unbound";
-    const configured = isBound && bound.configured && catalog.id !== "unbound";
-    const enabled = restrict ? config.enabledProviders.includes(catalog.id) && isBound : isBound;
+    const adapter = pool.get(catalog.id);
+    const present = Boolean(adapter && adapter.configured && catalog.id !== "unbound");
+    const enabled = restrict ? config.enabledProviders.includes(catalog.id) : catalog.id !== "unbound";
     return {
       catalog,
-      configured,
+      configured: present,
       enabled,
-      credentialPresent,
-      adapterName: isBound ? bound.name : catalog.id,
+      credentialPresent: present,
+      adapterName: adapter?.name ?? catalog.id,
       maxPrivacyClass: cloudCappedPrivacy(catalog, config),
     };
   });
@@ -75,8 +81,11 @@ export function buildRuntimeRegistry(config: AppConfig, bound: IntelligenceProvi
     status: config.disabledModels.includes(model.id) ? ("disabled" as const) : model.status,
   }));
 
-  if (!models.some((model) => model.providerId === bound.name)) {
-    models.push(synthesizeModel(bound, synthesizeCatalog(bound)));
+  for (const name of pool.names()) {
+    if (!models.some((model) => model.providerId === name)) {
+      const adapter = pool.get(name);
+      if (adapter) models.push(synthesizeModel(adapter, synthesizeCatalog(adapter)));
+    }
   }
 
   return { providers, models };
@@ -84,17 +93,23 @@ export function buildRuntimeRegistry(config: AppConfig, bound: IntelligenceProvi
 
 export function routeCapability(input: {
   config: AppConfig;
-  provider: IntelligenceProvider;
+  provider?: IntelligenceProvider;
+  pool?: ProviderPool;
   capability: CapabilityId;
   privacyClass: PrivacyClass;
+  forceProvider?: string;
 }): { registry: RuntimeRegistry; decision: RouteDecision } {
-  const registry = buildRuntimeRegistry(input.config, input.provider);
+  const bound = input.pool ?? input.provider;
+  if (!bound) throw new Error("routeCapability requires a provider pool.");
+  const registry = buildRuntimeRegistry(input.config, bound);
   const decision = decideRoute({
     capability: input.capability,
     privacyClass: input.privacyClass,
     providers: registry.providers,
     models: registry.models,
     defaultModel: input.config.defaultModels[input.capability] || input.config.aiModel,
+    providerPriority: input.config.providerPriority,
+    forceProvider: input.forceProvider,
   });
   return { registry, decision };
 }

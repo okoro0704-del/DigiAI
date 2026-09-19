@@ -39,6 +39,9 @@ export type CapabilityHealth = {
   configured: boolean;
   runtimeVerified: boolean;
   status: "unsupported" | "unconfigured" | "configured";
+  supportedProviders?: number;
+  configuredProviders?: number;
+  runtimeVerifiedProviders?: number;
 };
 
 export type ProviderHealthRow = {

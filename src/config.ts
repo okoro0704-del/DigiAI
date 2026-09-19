@@ -48,7 +48,16 @@ export function loadConfig() {
     fetchTimeoutMs: Number(env("FETCH_TIMEOUT_MS", "8000")),
     aiProvider: env("AI_PROVIDER", "unbound").toLowerCase(),
     openaiApiKey: env("OPENAI_API_KEY"),
+    geminiApiKey: env("GEMINI_API_KEY") || env("GOOGLE_API_KEY") || env("GOOGLE_GENERATIVE_AI_API_KEY"),
     aiModel: env("AI_MODEL", "gpt-4o-mini"),
+    geminiModel: env("AI_GEMINI_MODEL", "gemini-2.0-flash"),
+    providerPriority: (env("AI_PROVIDER_PRIORITY", "openai,gemini") || "openai,gemini")
+      .split(",")
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean),
+    allowFailover: env("AI_ALLOW_FAILOVER", "true").toLowerCase() !== "false",
+    maxProviderAttempts: Math.max(1, Number(env("AI_MAX_PROVIDER_ATTEMPTS", "2"))),
+    allowRouteOverride: env("DIGI_AI_ALLOW_ROUTE_OVERRIDE").toLowerCase() === "true",
     enabledProviders: env("AI_ENABLED_PROVIDERS")
       .split(",")
       .map((part) => part.trim().toLowerCase())

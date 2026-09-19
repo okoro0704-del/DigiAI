@@ -42,7 +42,10 @@ export class MemoryStore implements DigiAiStore {
     if (!this.writable) throw new Error("usage_ledger_unavailable");
     const duplicate =
       this.ledger.some((row) => row.receiptId === entry.receiptId) ||
-      this.ledger.some((row) => row.requestId === entry.requestId && row.kind === "usage") ||
+      Boolean(
+        entry.attemptIndex != null &&
+          this.ledger.some((row) => row.requestId === entry.requestId && row.attemptIndex === entry.attemptIndex && row.kind === "usage"),
+      ) ||
       Boolean(entry.providerRequestId && this.ledger.some((row) => row.providerRequestId === entry.providerRequestId));
     if (duplicate) return { inserted: false };
     this.ledger.push(entry);

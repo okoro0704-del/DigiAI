@@ -15,6 +15,7 @@ export function trustedApplicationId(caller: CallerApplication): string {
 export function buildLedgerEntry(input: {
   receiptId: string;
   requestId: string;
+  attemptIndex?: number;
   actor: ActorContext;
   caller: CallerApplication;
   entitySlug?: string;
@@ -42,6 +43,7 @@ export function buildLedgerEntry(input: {
     kind: "usage",
     receiptId: input.receiptId,
     requestId: input.requestId,
+    attemptIndex: input.attemptIndex,
     actorId: input.actor.trustId,
     tenantId: trustedTenantId({ entitySlug: input.entitySlug, actorTrustId: input.actor.trustId }),
     applicationId: trustedApplicationId(input.caller),

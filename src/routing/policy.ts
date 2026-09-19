@@ -11,6 +11,13 @@ export type EligibleRoute = {
   adapterName: string;
 };
 
+/** Reserved for later tenant/provider/request cost gates. Do not invent limits here. */
+export type BudgetSafetyHook = {
+  tenantBudgetRemaining?: number | null;
+  providerBudgetRemaining?: number | null;
+  requestMaxCost?: number | null;
+};
+
 export type RouteExclusion = {
   providerId?: string;
   modelId?: string;
@@ -51,6 +58,8 @@ export function decideRoute(input: {
   providers: RuntimeProvider[];
   models: ModelRecord[];
   defaultModel?: string;
+  providerPriority?: string[];
+  forceProvider?: string;
 }): RouteDecision {
   const definition = getCapability(input.capability);
   const excluded: RouteExclusion[] = [];
@@ -101,6 +110,10 @@ export function decideRoute(input: {
       excluded.push({ providerId: provider.catalog.id, reason: "Provider catalog does not list this capability." });
       continue;
     }
+    if (input.forceProvider && provider.catalog.id !== input.forceProvider) {
+      excluded.push({ providerId: provider.catalog.id, reason: "Not the operator-selected provider." });
+      continue;
+    }
 
     const models = input.models.filter((model) => model.providerId === provider.catalog.id);
     for (const model of models) {
@@ -135,10 +148,19 @@ export function decideRoute(input: {
     };
   }
 
-  const preferred = input.defaultModel
-    ? eligible.find((row) => row.modelId === input.defaultModel)
-    : undefined;
-  const selected = preferred ?? eligible[0]!;
+  const priority = input.providerPriority ?? [];
+  eligible.sort((a, b) => {
+    const rank = (id: string) => {
+      const index = priority.indexOf(id);
+      return index === -1 ? 1000 : index;
+    };
+    const byProvider = rank(a.providerId) - rank(b.providerId);
+    if (byProvider !== 0) return byProvider;
+    if (input.defaultModel && a.modelId === input.defaultModel) return -1;
+    if (input.defaultModel && b.modelId === input.defaultModel) return 1;
+    return a.modelId.localeCompare(b.modelId);
+  });
+  const selected = eligible[0]!;
   return {
     ok: true,
     capability: input.capability,
@@ -148,6 +170,7 @@ export function decideRoute(input: {
     explanation: [
       `capability=${input.capability}`,
       `selected=${selected.providerId}/${selected.modelId}`,
+      `priority=${priority.join(">") || "catalog"}`,
       `eligible=${eligible.map((row) => `${row.providerId}/${row.modelId}`).join(",") || "none"}`,
       `excluded=${excluded.map((row) => `${row.providerId ?? "?"}${row.modelId ? "/" + row.modelId : ""}:${row.reason}`).join(" | ") || "none"}`,
     ].join("; "),

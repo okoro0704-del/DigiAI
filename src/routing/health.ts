@@ -4,18 +4,20 @@ import type { HealthResponse, CapabilityHealth, ProviderHealthRow } from "../con
 import { defaultPrivacyClass } from "../contracts/privacy.js";
 import { getCapability } from "../capabilities/catalog.js";
 import type { IntelligenceProvider } from "../providers/types.js";
+import { ProviderPool } from "../providers/pool.js";
 import { providerHealth } from "../providers/router.js";
 import type { DigiAiStore } from "../store/types.js";
 import { activePricingVersions } from "../usage/pricing-catalog.js";
 import { decideRoute } from "./policy.js";
-import { buildRuntimeRegistry } from "./runtime.js";
+import { asPool, buildRuntimeRegistry } from "./runtime.js";
 
 export function buildHealthResponse(
   config: AppConfig,
-  provider: IntelligenceProvider,
+  provider: IntelligenceProvider | ProviderPool,
   store?: DigiAiStore,
 ): HealthResponse {
-  const registry = buildRuntimeRegistry(config, provider);
+  const pool = asPool(provider);
+  const registry = buildRuntimeRegistry(config, pool);
   const privacy = defaultPrivacyClass();
   const providers: Record<string, ProviderHealthRow> = {};
   for (const row of registry.providers) {
@@ -27,9 +29,7 @@ export function buildHealthResponse(
         ? "disabled"
         : row.configured
           ? "configured"
-          : row.credentialPresent
-            ? "unavailable"
-            : "unconfigured",
+          : "unconfigured",
       deploymentType: row.catalog.deploymentType,
       usageReporting: row.catalog.usageReporting,
     };
@@ -37,20 +37,28 @@ export function buildHealthResponse(
 
   const capabilities: Record<string, CapabilityHealth> = {};
   for (const id of CAPABILITY_IDS) {
-    const supported = registry.models.some((model) => model.capabilities.includes(id) && model.status === "enabled");
+    const supportedModels = registry.models.filter((model) => model.capabilities.includes(id) && model.status === "enabled");
+    const supportedProviders = new Set(supportedModels.map((model) => model.providerId));
+    const configuredProviders = registry.providers.filter(
+      (row) => row.configured && row.enabled && row.catalog.capabilities.includes(id),
+    );
     const decision = decideRoute({
       capability: id,
       privacyClass: getCapability(id).privacyEligible.includes(privacy) ? privacy : (getCapability(id).privacyEligible[0] ?? privacy),
       providers: registry.providers,
       models: registry.models,
       defaultModel: config.defaultModels[id] || config.aiModel,
+      providerPriority: config.providerPriority,
     });
     const configured = decision.ok;
     capabilities[id] = {
-      supported,
+      supported: supportedModels.length > 0,
       configured,
       runtimeVerified: false,
-      status: !supported ? "unsupported" : configured ? "configured" : "unconfigured",
+      status: !supportedModels.length ? "unsupported" : configured ? "configured" : "unconfigured",
+      supportedProviders: supportedProviders.size,
+      configuredProviders: configuredProviders.length,
+      runtimeVerifiedProviders: 0,
     };
   }
 
@@ -59,7 +67,7 @@ export function buildHealthResponse(
     ok: true,
     service: "digi-ai",
     status: "partial",
-    provider: providerHealth(provider),
+    provider: providerHealth(pool.primary()),
     providers,
     capabilities,
     usageLedger: {

@@ -51,8 +51,6 @@ export function aggregateEntries(rows: LedgerEntry[]): UsageAggregate {
   let hasEstimated = false;
   let hasActual = false;
   let currency: string | null = null;
-  let successful = 0;
-  let failed = 0;
 
   for (const row of rows) {
     if (row.kind !== "usage") continue;
@@ -72,8 +70,6 @@ export function aggregateEntries(rows: LedgerEntry[]): UsageAggregate {
       hasActual = true;
     }
     if (row.currency) currency = currency ?? row.currency;
-    if (row.status === "completed") successful += 1;
-    else failed += 1;
     addBreakdown(byActor, row.actorId, row);
     addBreakdown(byTenant, row.tenantId || "unscoped", row);
     addBreakdown(byApplication, row.applicationId, row);
@@ -83,10 +79,16 @@ export function aggregateEntries(rows: LedgerEntry[]): UsageAggregate {
     addBreakdown(byStatus, row.status, row);
   }
 
+  const usageRows = rows.filter((row) => row.kind === "usage");
+  const requestIds = new Set(usageRows.map((row) => row.requestId));
+  const successfulRequests = new Set(
+    usageRows.filter((row) => row.status === "completed").map((row) => row.requestId),
+  );
   return {
-    requestCount: rows.filter((row) => row.kind === "usage").length,
-    successful,
-    failed,
+    requestCount: requestIds.size,
+    attemptCount: usageRows.length,
+    successful: successfulRequests.size,
+    failed: requestIds.size - successfulRequests.size,
     native,
     estimatedProviderCost: hasEstimated ? Number(estimated.toFixed(8)) : null,
     actualProviderCost: hasActual ? Number(actual.toFixed(8)) : null,

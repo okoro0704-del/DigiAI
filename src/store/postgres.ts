@@ -34,8 +34,10 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
   reconciliation JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS usage_ledger_request_usage
-  ON usage_ledger (request_id) WHERE kind = 'usage';
+ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS attempt_index INTEGER;
+DROP INDEX IF EXISTS usage_ledger_request_usage;
+CREATE UNIQUE INDEX IF NOT EXISTS usage_ledger_request_attempt
+  ON usage_ledger (request_id, attempt_index) WHERE kind = 'usage' AND attempt_index IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS usage_ledger_provider_request
   ON usage_ledger (provider_request_id) WHERE provider_request_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS request_receipts (
@@ -61,6 +63,7 @@ function toEntry(row: QueryResultRow): LedgerEntry {
     kind: row.kind === "adjustment" ? "adjustment" : "usage",
     receiptId: String(row.receipt_id),
     requestId: String(row.request_id),
+    attemptIndex: row.attempt_index == null ? undefined : Number(row.attempt_index),
     actorId: String(row.actor_id),
     tenantId: row.tenant_id ? String(row.tenant_id) : undefined,
     applicationId: String(row.application_id),
@@ -134,12 +137,12 @@ export class PostgresStore implements DigiAiStore {
     try {
       const result = await this.pool.query(
         `INSERT INTO usage_ledger (
-          ledger_id, kind, receipt_id, request_id, provider_request_id, actor_id, tenant_id,
+          ledger_id, kind, receipt_id, request_id, attempt_index, provider_request_id, actor_id, tenant_id,
           application_id, capability, provider_id, model_id, privacy_class, started_at, completed_at,
           status, error_class, native_usage, pricing_version, estimated_provider_cost, actual_provider_cost,
           currency, digi_ai_units, route_explanation, reconciliation, created_at
         ) VALUES (
-          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18,$19,$20,$21,NULL,$22,$23::jsonb,$24
+          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20,$21,$22,NULL,$23,$24::jsonb,$25
         )
         ON CONFLICT (receipt_id) DO NOTHING`,
         [
@@ -147,6 +150,7 @@ export class PostgresStore implements DigiAiStore {
           entry.kind,
           entry.receiptId,
           entry.requestId,
+          entry.attemptIndex ?? null,
           entry.providerRequestId ?? null,
           entry.actorId,
           entry.tenantId ?? null,

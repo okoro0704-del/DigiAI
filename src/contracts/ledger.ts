@@ -14,6 +14,7 @@ export type LedgerEntry = {
   kind: LedgerEntryKind;
   receiptId: string;
   requestId: string;
+  attemptIndex?: number;
   actorId: string;
   tenantId?: string;
   applicationId: string;
@@ -63,6 +64,7 @@ export type UsageBreakdown = Record<string, { count: number; estimatedProviderCo
 
 export type UsageAggregate = {
   requestCount: number;
+  attemptCount: number;
   successful: number;
   failed: number;
   native: NativeTotals;

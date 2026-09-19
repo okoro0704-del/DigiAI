@@ -14,7 +14,7 @@ import { handleAsk } from "./intelligence/engine.js";
 import { handleTwinBrief } from "./intelligence/twin-brief.js";
 import { newId } from "./lib/crypto.js";
 import { DigiAiError } from "./lib/http.js";
-import { createProvider } from "./providers/router.js";
+import { createProviders } from "./providers/router.js";
 import type { IntelligenceProvider } from "./providers/types.js";
 import { createStore } from "./store/index.js";
 import type { DigiAiStore } from "./store/types.js";
@@ -24,6 +24,7 @@ import { renderDigiAiPage } from "./ui/page.js";
 
 export type DigiAiAppOptions = {
   provider?: IntelligenceProvider;
+  providers?: Record<string, IntelligenceProvider>;
   resolver?: IdentityResolver;
   digipedia?: DigiPediaReader;
   diginews?: DigiNewsReader;
@@ -40,7 +41,15 @@ const FORBIDDEN_ECONOMIC_FIELDS = [
 ] as const;
 
 function rejectClientRouteOverride(body: Record<string, unknown>) {
-  if ("provider" in body || "model" in body || "providerId" in body || "modelId" in body) {
+  if (
+    "provider" in body ||
+    "model" in body ||
+    "providerId" in body ||
+    "modelId" in body ||
+    "failoverTo" in body ||
+    "forceProvider" in body ||
+    "preferredProvider" in body
+  ) {
     throw new DigiAiError(400, "invalid_request", "Provider and model selection is reserved to Digi AI.");
   }
   for (const field of FORBIDDEN_ECONOMIC_FIELDS) {
@@ -96,10 +105,15 @@ function parseConstraints(raw: unknown): AskConstraints | undefined {
   if (body.privacyClass !== undefined && !isPrivacyClass(body.privacyClass)) {
     throw new DigiAiError(400, "invalid_request", "Unknown privacy class.");
   }
+  if (body.failoverTo !== undefined || body.preferredProvider !== undefined) {
+    throw new DigiAiError(400, "invalid_request", "Provider selection is reserved to Digi AI.");
+  }
   return {
     structuredOutput: body.structuredOutput === true,
     privacyClass: isPrivacyClass(body.privacyClass) ? body.privacyClass : undefined,
     maxLatency: typeof body.maxLatency === "string" ? body.maxLatency : undefined,
+    allowFailover: typeof body.allowFailover === "boolean" ? body.allowFailover : undefined,
+    forceProvider: typeof body.forceProvider === "string" ? body.forceProvider.toLowerCase() : undefined,
   };
 }
 
@@ -123,18 +137,20 @@ function parseTwinBriefBody(raw: unknown): TwinBriefInput {
 
 export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
   const app = Fastify({ logger: false });
-  const provider = createProvider(config, options.provider);
+  const pool = createProviders(config, options.providers ?? options.provider);
+  const provider = options.provider ?? pool.primary();
   const store = options.store ?? createStore(config);
   const deps = {
     config,
     provider,
+    pool,
     digipedia: options.digipedia ?? new HttpDigiPediaReader(config),
     diginews: options.diginews ?? new HttpDigiNewsReader(config),
     store,
   };
   const resolver = options.resolver ?? createTrustIdResolver(config);
 
-  app.get("/health", async (): Promise<HealthResponse> => buildHealthResponse(config, provider, store));
+  app.get("/health", async (): Promise<HealthResponse> => buildHealthResponse(config, pool, store));
 
   const sendError = (reply: FastifyReply, err: unknown, extra: Record<string, unknown> = {}) => {
     if (err instanceof DigiAiError) {

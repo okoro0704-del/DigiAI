@@ -10,9 +10,10 @@ import { clip, newId, nowIso } from "../lib/crypto.js";
 import { DigiAiError } from "../lib/http.js";
 import { requireSlug } from "../lib/slug.js";
 import { SYSTEM_POLICY, wrapCanonicalData } from "../lib/policy.js";
+import { ProviderPool } from "../providers/pool.js";
 import type { IntelligenceProvider } from "../providers/types.js";
+import { executeWithFailover } from "../routing/execute.js";
 import { resolveRequestedCapability } from "../routing/resolve-capability.js";
-import { routeCapability } from "../routing/runtime.js";
 import { buildLedgerEntry } from "../usage/ledger.js";
 import { persistExecution } from "../usage/persist.js";
 import { buildRequestReceipt, buildUsageRecord, nativeUsageFromTokens, snapshotFromRecord } from "../usage/receipt.js";
@@ -23,6 +24,7 @@ import { selectSources } from "./sources.js";
 export type EngineDeps = {
   config: AppConfig;
   provider: IntelligenceProvider;
+  pool?: ProviderPool;
   digipedia: DigiPediaReader;
   diginews: DigiNewsReader;
   store: DigiAiStore;
@@ -127,25 +129,41 @@ export async function handleAsk(input: {
   userParts.push(`CAPABILITY: ${capability}`);
   userParts.push("If canonical data is present, ground generated text in it and say when you are interpreting.");
 
-  const usageId = newId("use");
-  const receiptId = newId("rcpt");
   const startedAt = nowIso();
-  const routed = routeCapability({
+  const pool = deps.pool ?? new ProviderPool({ [deps.provider.name]: deps.provider });
+  const allowFailover = body.constraints?.allowFailover !== false && deps.config.allowFailover;
+  const forceProvider =
+    (deps.config.allowRouteOverride || (!deps.config.isProd && caller.id === "test")) &&
+    body.constraints?.forceProvider
+      ? body.constraints.forceProvider
+      : undefined;
+  const executed = await executeWithFailover({
     config: deps.config,
-    provider: deps.provider,
+    pool,
     capability,
     privacyClass,
+    allowFailover,
+    forceProvider,
+    request: {
+      messages: [
+        { role: "system", content: SYSTEM_POLICY },
+        { role: "user", content: userParts.join("\n\n") },
+      ],
+      structuredOutput: body.constraints?.structuredOutput === true,
+    },
   });
 
-  if (!routed.decision.ok) {
-    const error = routed.decision.error === "unsupported_capability" ? "unsupported_capability" : "provider_unavailable";
+  if (!executed.decision.ok) {
+    const error = executed.decision.error === "unsupported_capability" ? "unsupported_capability" : "provider_unavailable";
+    const receiptId = newId("rcpt");
     const recorded = await persistAsk({
       deps,
       actor,
       caller,
-      usageId,
+      usageId: newId("use"),
       receiptId,
       requestId,
+      attemptIndex: 1,
       correlationId,
       entitySlug: entity.slug,
       capability,
@@ -155,17 +173,17 @@ export async function handleAsk(input: {
       latencyMs: 0,
       success: false,
       status: error,
-      errorClass: routed.decision.error,
+      errorClass: executed.decision.error,
       operation: mode,
       sources,
-      routeExplanation: routed.decision.explanation,
+      routeExplanation: executed.explanation,
       resultStatus: sourceUnavailable ? "source_unavailable" : error,
     });
     return {
       ok: false,
       service: "digi-ai",
       error,
-      message: routed.decision.detail,
+      message: executed.decision.detail,
       provenance,
       usage: snapshotFromRecord(recorded.usage),
       execution: {
@@ -181,61 +199,87 @@ export async function handleAsk(input: {
     };
   }
 
-  const providerResult = await deps.provider.invoke({
-    model: routed.decision.selected.modelId,
-    messages: [
-      { role: "system", content: SYSTEM_POLICY },
-      { role: "user", content: userParts.join("\n\n") },
-    ],
-  });
+  let recorded: Awaited<ReturnType<typeof persistAsk>> | undefined;
+  for (const attempt of executed.attempts) {
+    const providerResult = attempt.result;
+    const nativeUsage = providerResult.ok
+      ? nativeUsageFromTokens(providerResult.usage)
+      : undefined;
+    const status = providerResult.ok
+      ? "completed"
+      : providerResult.error === "unavailable"
+        ? "provider_unavailable"
+        : "failed";
+    recorded = await persistAsk({
+      deps,
+      actor,
+      caller,
+      usageId: newId("use"),
+      receiptId: newId("rcpt"),
+      requestId,
+      attemptIndex: attempt.attemptIndex,
+      correlationId,
+      entitySlug: entity.slug,
+      capability,
+      privacyClass,
+      providerId: attempt.providerId,
+      modelId: providerResult.ok ? providerResult.model : attempt.modelId,
+      startedAt,
+      latencyMs: providerResult.latencyMs,
+      success: providerResult.ok,
+      status,
+      nativeUsage,
+      providerRequestId: providerResult.ok ? providerResult.providerRequestId : undefined,
+      errorClass: providerResult.ok ? undefined : providerResult.error,
+      operation: mode,
+      sources,
+      routeExplanation: `${executed.explanation}; attempt ${attempt.attemptIndex} ${attempt.providerId}/${attempt.modelId} ${providerResult.ok ? "ok" : providerResult.error}${attempt.failoverReason ? `; ${attempt.failoverReason}` : ""}`,
+      resultStatus: sourceUnavailable ? "source_unavailable" : status,
+    });
+  }
 
-  const nativeUsage = providerResult.ok ? nativeUsageFromTokens(providerResult.usage) : undefined;
-  const status = providerResult.ok
-    ? "completed"
-    : providerResult.error === "unavailable"
-      ? "provider_unavailable"
-      : "failed";
-  const recorded = await persistAsk({
+  const providerResult = executed.final;
+  const last = recorded ?? await persistAsk({
     deps,
     actor,
     caller,
-    usageId,
-    receiptId,
+    usageId: newId("use"),
+    receiptId: newId("rcpt"),
     requestId,
+    attemptIndex: 1,
     correlationId,
     entitySlug: entity.slug,
     capability,
     privacyClass,
-    providerId: providerResult.provider,
-    modelId: providerResult.ok ? providerResult.model : routed.decision.selected.modelId,
+    providerId: deps.provider.name,
     startedAt,
-    latencyMs: providerResult.latencyMs,
-    success: providerResult.ok,
-    status,
-    nativeUsage,
-    providerRequestId: providerResult.ok ? providerResult.providerRequestId : undefined,
-    errorClass: providerResult.ok ? undefined : providerResult.error,
+    latencyMs: 0,
+    success: false,
+    status: "provider_unavailable",
+    errorClass: "provider_unavailable",
     operation: mode,
     sources,
-    routeExplanation: routed.decision.explanation,
-    resultStatus: sourceUnavailable ? "source_unavailable" : status,
+    routeExplanation: executed.explanation,
+    resultStatus: sourceUnavailable ? "source_unavailable" : "provider_unavailable",
   });
+  const receiptId = last.receiptId;
 
-  if (!providerResult.ok) {
+  if (!providerResult || !providerResult.ok) {
+    const status = !providerResult || providerResult.error === "unavailable" ? "provider_unavailable" : "failed";
     return {
       ok: false,
       service: "digi-ai",
       error: status,
-      message: providerResult.detail,
+      message: providerResult && !providerResult.ok ? providerResult.detail : executed.decision.ok ? "No eligible provider completed the request." : "Provider unavailable.",
       provenance,
-      usage: snapshotFromRecord(recorded.usage),
+      usage: snapshotFromRecord(last.usage),
       execution: {
         requestId,
         correlationId,
-        provider: providerResult.provider,
-        model: routed.decision.selected.modelId,
+        provider: providerResult?.provider ?? deps.provider.name,
+        model: executed.decision.ok ? executed.decision.selected.modelId : undefined,
         capability,
-        latencyMs: providerResult.latencyMs,
+        latencyMs: providerResult?.latencyMs ?? 0,
         sourcesUsed: sources,
         finishState: sourceUnavailable ? "source_unavailable" : status,
       },
@@ -257,7 +301,7 @@ export async function handleAsk(input: {
     service: "digi-ai",
     answer: providerResult.text,
     provenance,
-    usage: snapshotFromRecord(recorded.usage),
+    usage: snapshotFromRecord(last.usage),
     execution: {
       requestId,
       correlationId,
@@ -342,6 +386,7 @@ async function persistAsk(input: {
   usageId: string;
   receiptId: string;
   requestId: string;
+  attemptIndex?: number;
   correlationId: string;
   entitySlug?: string;
   capability: string;
@@ -363,6 +408,7 @@ async function persistAsk(input: {
   const ledger = buildLedgerEntry({
     receiptId: input.receiptId,
     requestId: input.requestId,
+    attemptIndex: input.attemptIndex,
     actor: input.actor,
     caller: input.caller,
     entitySlug: input.entitySlug,
@@ -416,5 +462,5 @@ async function persistAsk(input: {
     usageId: input.usageId,
   });
   await persistExecution(input.deps.store, { ledger, usage, receipt });
-  return { usage, ledger, receipt };
+  return { usage, ledger, receipt, receiptId: input.receiptId };
 }

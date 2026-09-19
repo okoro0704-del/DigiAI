@@ -29,6 +29,8 @@ export function providerStateFromError(error: ProviderFailure["error"]): TwinPro
   if (error === "rate_limited") return { state: "rate_limited", detail: "AI reasoning is temporarily rate limited." };
   if (error === "auth_failed") return { state: "auth_failed", detail: "AI provider authentication failed." };
   if (error === "timeout") return { state: "unavailable", detail: "AI reasoning timed out." };
+  if (error === "safety_refused") return { state: "failed", detail: "The provider refused this request under its safety policy." };
+  if (error === "invalid_request") return { state: "failed", detail: "The provider rejected the request as invalid." };
   return { state: "failed", detail: "AI reasoning is temporarily unavailable." };
 }
 

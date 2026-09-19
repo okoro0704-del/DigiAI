@@ -76,6 +76,19 @@ export const PRICING_CATALOG: PricingRecord[] = [
     status: "active",
     dimensions: [{ kind: "image", unit: "image", perUnit: 0.04 }],
   },
+  {
+    providerId: "gemini",
+    modelId: "gemini-2.0-flash",
+    pricingVersion: "gemini-2.0-flash-2026-09-01",
+    effectiveFrom: "2026-09-01T00:00:00.000Z",
+    currency: "USD",
+    status: "active",
+    dimensions: [
+      { kind: "input_tokens", unit: "token", perMillion: 0.1 },
+      { kind: "output_tokens", unit: "token", perMillion: 0.4 },
+      { kind: "cached_input_tokens", unit: "token", perMillion: 0.025 },
+    ],
+  },
 ];
 
 export function listPricingCatalog(): PricingRecord[] {

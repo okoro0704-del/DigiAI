@@ -25,6 +25,9 @@ export type AskConstraints = {
   structuredOutput?: boolean;
   privacyClass?: PrivacyClass;
   maxLatency?: string;
+  allowFailover?: boolean;
+  /** Operator/test-only. Rejected for normal callers. */
+  forceProvider?: string;
 };
 
 export type DigiAiAskInput = {

@@ -16,14 +16,15 @@ import { requireSlug } from "../lib/slug.js";
 import { defaultPrivacyClass } from "../contracts/privacy.js";
 import { providerStateFromError } from "../providers/errors.js";
 import type { ProviderFailure } from "../providers/types.js";
-import { routeCapability } from "../routing/runtime.js";
+import { ProviderPool } from "../providers/pool.js";
+import { executeWithFailover } from "../routing/execute.js";
 import { buildLedgerEntry } from "../usage/ledger.js";
 import { persistExecution } from "../usage/persist.js";
 import { buildRequestReceipt, buildUsageRecord, nativeUsageFromTokens, snapshotFromRecord } from "../usage/receipt.js";
 import type { EngineDeps } from "./engine.js";
 
 const BANNED_CLAIM = /\b(viral|trending|go(?:ing)? viral|audience growth|exploded|millions of views|guaranteed engagement)\b/i;
-const SECRET_RE = /sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+|OPENAI_API_KEY\s*=\s*\S+|DIGI_AI_CALLER_KEY\s*=\s*\S+/gi;
+const SECRET_RE = /sk-[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{20,}|Bearer\s+\S+|OPENAI_API_KEY\s*=\s*\S+|GEMINI_API_KEY\s*=\s*\S+|GOOGLE_API_KEY\s*=\s*\S+|DIGI_AI_CALLER_KEY\s*=\s*\S+/gi;
 
 export async function handleTwinBrief(input: {
   deps: EngineDeps;
@@ -168,16 +169,12 @@ export async function handleTwinBrief(input: {
   let finishState: TwinBriefSuccess["execution"]["finishState"] = sourceUnavailable ? "source_unavailable" : "completed";
 
   const capability = "THINK" as const;
-  const routed = routeCapability({
-    config: deps.config,
-    provider: deps.provider,
-    capability,
-    privacyClass: defaultPrivacyClass(),
-  });
-  let routeExplanation = routed.decision.explanation;
+  const pool = deps.pool ?? new ProviderPool({ [deps.provider.name]: deps.provider });
+  const anyConfigured = pool.names().some((name) => pool.get(name)?.configured);
+  let routeExplanation = "";
   let errorClass: string | undefined;
 
-  if (!deps.provider.configured) {
+  if (!anyConfigured) {
     providerStatus = {
       state: "unbound",
       provider: deps.provider.name,
@@ -185,14 +182,7 @@ export async function handleTwinBrief(input: {
     };
     finishState = sourceUnavailable ? "source_unavailable" : "provider_unavailable";
     errorClass = "provider_not_configured";
-  } else if (!routed.decision.ok) {
-    providerStatus = {
-      state: "unavailable",
-      provider: deps.provider.name,
-      detail: routed.decision.detail,
-    };
-    finishState = sourceUnavailable ? "source_unavailable" : "provider_unavailable";
-    errorClass = routed.decision.error;
+    routeExplanation = "No configured provider in the pool.";
   } else {
     const modelContext = buildModelContext({
       displayName,
@@ -202,27 +192,42 @@ export async function handleTwinBrief(input: {
       byMe: byMe.map((item) => item.title || item.publicationId),
       aboutMe: aboutMe.map((item) => `${item.title || item.publicationId} (publisher: ${item.publisher.displayName})`),
     });
-    const started = Date.now();
-    const result = await deps.provider.invoke({
-      temperature: 0.3,
-      model: routed.decision.selected.modelId,
-      messages: [
-        { role: "system", content: `${SYSTEM_POLICY}\n${TWIN_POLICY}` },
-        {
-          role: "user",
-          content: [
-            "USER REQUEST:\nProduce a Digi Twin interpretation for What's popping? Return JSON only.",
-            wrapCanonicalData("twin-facts", modelContext),
-            "RESPONSE SHAPE:\n{\"take\":\"...\",\"opportunities\":[{\"idea\":\"...\",\"why\":\"...\",\"basedOn\":[\"existing title\"]}]}",
-            "Use only the canonical data above. Do not invent publications, trends, virality, or audience demand.",
-          ].join("\n\n"),
-        },
-      ],
+    const executed = await executeWithFailover({
+      config: deps.config,
+      pool,
+      capability,
+      privacyClass: defaultPrivacyClass(),
+      allowFailover: deps.config.allowFailover,
+      request: {
+        temperature: 0.3,
+        messages: [
+          { role: "system", content: `${SYSTEM_POLICY}\n${TWIN_POLICY}` },
+          {
+            role: "user",
+            content: [
+              "USER REQUEST:\nProduce a Digi Twin interpretation for What's popping? Return JSON only.",
+              wrapCanonicalData("twin-facts", modelContext),
+              "RESPONSE SHAPE:\n{\"take\":\"...\",\"opportunities\":[{\"idea\":\"...\",\"why\":\"...\",\"basedOn\":[\"existing title\"]}]}",
+              "Use only the canonical data above. Do not invent publications, trends, virality, or audience demand.",
+            ].join("\n\n"),
+          },
+        ],
+      },
     });
-    latencyMs = result.latencyMs || Date.now() - started;
-    model = result.model ?? routed.decision.selected.modelId;
-    if (result.ok) {
+    routeExplanation = executed.explanation;
+    if (!executed.decision.ok || !executed.final) {
+      providerStatus = {
+        state: "unavailable",
+        provider: deps.provider.name,
+        detail: executed.decision.ok ? "No eligible provider completed the briefing interpretation." : executed.decision.detail,
+      };
+      finishState = sourceUnavailable ? "source_unavailable" : "provider_unavailable";
+      errorClass = executed.decision.ok ? "provider_unavailable" : executed.decision.error;
+    } else if (executed.final.ok) {
+      const result = executed.final;
       usageSuccess = true;
+      latencyMs = result.latencyMs;
+      model = result.model;
       tokens = {
         inputTokens: result.usage.inputTokens,
         outputTokens: result.usage.outputTokens,
@@ -244,6 +249,7 @@ export async function handleTwinBrief(input: {
         note: "Digi AI interpretation. Not canonical knowledge.",
       });
     } else {
+      const result = executed.final;
       const mapped = providerStateFromError((result as ProviderFailure).error);
       providerStatus = {
         state: mapped.state,
@@ -252,25 +258,92 @@ export async function handleTwinBrief(input: {
         detail: mapped.detail,
       };
       errorClass = result.error;
+      latencyMs = result.latencyMs;
+      model = result.model;
       finishState = result.error === "unavailable" || result.error === "quota" || result.error === "billing"
         ? "provider_unavailable"
         : sourceUnavailable
           ? "source_unavailable"
           : "failed";
     }
+
+    for (const attempt of executed.attempts) {
+      const ok = attempt.result.ok;
+      const attemptReceiptId = newId("rcpt");
+      const attemptUsageId = newId("use");
+      await persistExecution(deps.store, {
+        ledger: buildLedgerEntry({
+          receiptId: attemptReceiptId,
+          requestId,
+          attemptIndex: attempt.attemptIndex,
+          actor,
+          caller,
+          entitySlug: authorizedSlug,
+          capability,
+          providerId: attempt.providerId,
+          modelId: attempt.result.model ?? attempt.modelId,
+          privacyClass: defaultPrivacyClass(),
+          startedAt: generatedAt,
+          completedAt: generatedAt,
+          status: ok ? "completed" : attempt.result.error === "unavailable" ? "provider_unavailable" : "failed",
+          errorClass: ok ? undefined : attempt.result.error,
+          nativeUsage: ok ? nativeUsageFromTokens(attempt.result.usage) : undefined,
+          routeExplanation: `${routeExplanation}${attempt.failoverReason ? `; ${attempt.failoverReason}` : ""}`,
+          providerRequestId: ok ? attempt.result.providerRequestId : undefined,
+        }),
+        usage: buildUsageRecord({
+          usageId: attemptUsageId,
+          requestId,
+          correlationId,
+          actorTrustId: actor.trustId,
+          callerId: caller.id,
+          entitySlug: authorizedSlug,
+          tenantId: authorizedSlug,
+          receiptId: attemptReceiptId,
+          capability,
+          providerId: attempt.providerId,
+          modelId: attempt.result.model ?? attempt.modelId,
+          startedAt: generatedAt,
+          completedAt: generatedAt,
+          latencyMs: attempt.result.latencyMs,
+          success: ok,
+          nativeUsage: ok ? nativeUsageFromTokens(attempt.result.usage) : undefined,
+          errorClass: ok ? undefined : attempt.result.error,
+        }),
+        receipt: buildRequestReceipt({
+          receiptId: attemptReceiptId,
+          requestId,
+          correlationId,
+          actorTrustId: actor.trustId,
+          callerId: caller.id,
+          entitySlug: authorizedSlug,
+          tenantId: authorizedSlug,
+          operation: "twin.brief",
+          sourcesAccessed: sourcesUsed,
+          provider: attempt.providerId,
+          model: attempt.result.model ?? attempt.modelId,
+          capability,
+          routeExplanation,
+          resultStatus: ok ? "completed" : "failed",
+          usageId: attemptUsageId,
+        }),
+      });
+    }
   }
 
   const usageId = newId("use");
   const receiptId = newId("rcpt");
   const twinStatus = usageSuccess ? "completed" : finishState === "provider_unavailable" ? "provider_unavailable" : "failed";
+  const shouldPersistSummary = !anyConfigured;
   const ledger = buildLedgerEntry({
     receiptId,
     requestId,
+    attemptIndex: anyConfigured ? undefined : 1,
     actor,
     caller,
     entitySlug: authorizedSlug,
     capability,
-    providerId: deps.provider.name,
+    providerId: providerStatus.provider,
     modelId: model,
     privacyClass: defaultPrivacyClass(),
     startedAt: generatedAt,
@@ -291,7 +364,7 @@ export async function handleTwinBrief(input: {
     receiptId,
     capability,
     privacyClass: defaultPrivacyClass(),
-    providerId: deps.provider.name,
+    providerId: providerStatus.provider,
     modelId: model,
     startedAt: generatedAt,
     completedAt: generatedAt,
@@ -301,27 +374,29 @@ export async function handleTwinBrief(input: {
     nativeUsage: nativeUsageFromTokens(tokens),
     errorClass,
   });
-  await persistExecution(deps.store, {
-    ledger,
-    usage: usageRow,
-    receipt: buildRequestReceipt({
-      receiptId,
-      requestId,
-      correlationId,
-      actorTrustId: actor.trustId,
-      callerId: caller.id,
-      entitySlug: authorizedSlug,
-      tenantId: ledger.tenantId,
-      operation: "twin.brief",
-      sourcesAccessed: sourcesUsed,
-      provider: deps.provider.name,
-      model,
-      capability,
-      routeExplanation,
-      resultStatus: finishState === "completed" ? "completed" : finishState,
-      usageId,
-    }),
-  });
+  if (shouldPersistSummary) {
+    await persistExecution(deps.store, {
+      ledger,
+      usage: usageRow,
+      receipt: buildRequestReceipt({
+        receiptId,
+        requestId,
+        correlationId,
+        actorTrustId: actor.trustId,
+        callerId: caller.id,
+        entitySlug: authorizedSlug,
+        tenantId: ledger.tenantId,
+        operation: "twin.brief",
+        sourcesAccessed: sourcesUsed,
+        provider: deps.provider.name,
+        model,
+        capability,
+        routeExplanation,
+        resultStatus: finishState === "completed" ? "completed" : finishState,
+        usageId,
+      }),
+    });
+  }
 
   return {
     ok: true,
@@ -345,7 +420,7 @@ export async function handleTwinBrief(input: {
     execution: {
       requestId,
       correlationId,
-      provider: deps.provider.name,
+      provider: providerStatus.provider ?? deps.provider.name,
       model,
       capability,
       latencyMs,
