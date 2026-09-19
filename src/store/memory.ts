@@ -10,6 +10,7 @@ import type {
   CreditReservation,
   ReservationStatus,
 } from "../contracts/credits.js";
+import type { DigiAiExecutionPlan, DigiAiExecutionStep, DigiAiObjective } from "../contracts/orchestration.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
 import { creditCursor, deriveCreditBalance, parseCreditCursor } from "../credits/balance.js";
@@ -36,6 +37,9 @@ export class MemoryStore implements DigiAiStore {
   readonly creditAccounts: CreditAccount[] = [];
   readonly creditEntries: CreditLedgerEntry[] = [];
   readonly creditReservations: CreditReservation[] = [];
+  readonly objectives: DigiAiObjective[] = [];
+  readonly plans: DigiAiExecutionPlan[] = [];
+  readonly steps: DigiAiExecutionStep[] = [];
   private writable = true;
   private readonly creditLocks = new Map<string, Promise<void>>();
 
@@ -439,6 +443,67 @@ export class MemoryStore implements DigiAiStore {
 
   async findCreditEntry(accountId: string, kind: CreditEntryKind, idempotencyKey: string) {
     return this.creditEntries.find((row) => row.accountId === accountId && row.kind === kind && row.idempotencyKey === idempotencyKey) ?? null;
+  }
+
+  orchestrationStatus(): LedgerStatus {
+    return this.ledgerStatus();
+  }
+
+  async putObjective(row: DigiAiObjective) {
+    const existing = this.objectives.find((item) => item.objectiveId === row.objectiveId);
+    if (existing) {
+      Object.assign(existing, row);
+      return { inserted: false };
+    }
+    if (row.idempotencyKey) {
+      const dup = this.objectives.find(
+        (item) => item.applicationId === row.applicationId && item.actorId === row.actorId && item.idempotencyKey === row.idempotencyKey,
+      );
+      if (dup) return { inserted: false };
+    }
+    this.objectives.push(row);
+    return { inserted: true };
+  }
+
+  async getObjective(objectiveId: string) {
+    return this.objectives.find((row) => row.objectiveId === objectiveId) ?? null;
+  }
+
+  async findObjectiveByIdempotency(applicationId: string, actorId: string, idempotencyKey: string) {
+    return this.objectives.find(
+      (row) => row.applicationId === applicationId && row.actorId === actorId && row.idempotencyKey === idempotencyKey,
+    ) ?? null;
+  }
+
+  async putPlan(row: DigiAiExecutionPlan) {
+    const idx = this.plans.findIndex((item) => item.planId === row.planId);
+    if (idx >= 0) this.plans[idx] = row;
+    else this.plans.push(row);
+  }
+
+  async getPlan(objectiveId: string) {
+    return this.plans.find((row) => row.objectiveId === objectiveId) ?? null;
+  }
+
+  async putStep(row: DigiAiExecutionStep) {
+    const idx = this.steps.findIndex((item) => item.stepId === row.stepId);
+    if (idx >= 0) this.steps[idx] = row;
+    else this.steps.push(row);
+  }
+
+  async updateStep(stepId: string, patch: Partial<DigiAiExecutionStep>) {
+    const row = this.steps.find((item) => item.stepId === stepId);
+    if (!row) return null;
+    Object.assign(row, patch);
+    return row;
+  }
+
+  async listSteps(objectiveId: string) {
+    return this.steps.filter((row) => row.objectiveId === objectiveId);
+  }
+
+  async listObjectives() {
+    return [...this.objectives];
   }
 }
 

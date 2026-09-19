@@ -124,6 +124,13 @@ export function loadConfig() {
     sovereignDriveTimeoutMs: Number(env("SOVEREIGN_DRIVE_TIMEOUT_MS", "45000")),
     newsLimit: Number(env("DIGINEWS_LIMIT", "8")),
     economicsMode: parseEconomicsMode(env("DIGI_AI_ECONOMICS_MODE", "observe")),
+    orchestrationMaxSteps: Number(env("DIGI_AI_ORCH_MAX_STEPS", "8")),
+    orchestrationMaxDepth: Number(env("DIGI_AI_ORCH_MAX_DEPTH", "4")),
+    orchestrationMaxParallelSteps: Number(env("DIGI_AI_ORCH_MAX_PARALLEL", "2")),
+    orchestrationMaxPlanningAttempts: Number(env("DIGI_AI_ORCH_MAX_PLANNING", "1")),
+    orchestrationMaxStepAttempts: Number(env("DIGI_AI_ORCH_MAX_STEP_ATTEMPTS", "1")),
+    orchestrationMaxInstructionChars: Number(env("DIGI_AI_ORCH_MAX_INSTRUCTION", "4000")),
+    orchestrationMaxDesiredOutputs: Number(env("DIGI_AI_ORCH_MAX_OUTPUTS", "6")),
   };
 }
 

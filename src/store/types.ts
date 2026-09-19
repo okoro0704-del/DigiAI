@@ -9,6 +9,7 @@ import type {
   CreditReservation,
   ReservationStatus,
 } from "../contracts/credits.js";
+import type { DigiAiExecutionPlan, DigiAiExecutionStep, DigiAiObjective } from "../contracts/orchestration.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus, UsageAggregate } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
 
@@ -127,4 +128,14 @@ export interface DigiAiStore {
   listCreditReservations(accountId?: string): Promise<CreditReservation[]>;
   listCreditAccounts(): Promise<CreditAccount[]>;
   findCreditEntry(accountId: string, kind: CreditEntryKind, idempotencyKey: string): Promise<CreditLedgerEntry | null>;
+  orchestrationStatus(): LedgerStatus;
+  putObjective(row: DigiAiObjective): Promise<{ inserted: boolean }>;
+  getObjective(objectiveId: string): Promise<DigiAiObjective | null>;
+  findObjectiveByIdempotency(applicationId: string, actorId: string, idempotencyKey: string): Promise<DigiAiObjective | null>;
+  putPlan(row: DigiAiExecutionPlan): Promise<void>;
+  getPlan(objectiveId: string): Promise<DigiAiExecutionPlan | null>;
+  putStep(row: DigiAiExecutionStep): Promise<void>;
+  updateStep(stepId: string, patch: Partial<DigiAiExecutionStep>): Promise<DigiAiExecutionStep | null>;
+  listSteps(objectiveId: string): Promise<DigiAiExecutionStep[]>;
+  listObjectives(): Promise<DigiAiObjective[]>;
 }

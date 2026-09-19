@@ -30,6 +30,8 @@ import type { LedgerQuery } from "./contracts/ledger.js";
 import { runEconomicAcceptance } from "./credits/acceptance.js";
 import { assertOperatorEconomics, readOwnCreditLedger, readOwnCreditSummary } from "./credits/query.js";
 import { reconcileCredits } from "./credits/reconcile.js";
+import { runOrchestrationAcceptance } from "./orchestration/acceptance.js";
+import { advanceObjective, cancelObjective, createObjective, inspectObjective, parseObjectiveBody } from "./orchestration/engine.js";
 import { isOperatorCaller, readUsageReceipt, readUsageSummary, scopedLedgerQuery } from "./usage/query.js";
 import { renderDigiAiPage } from "./ui/page.js";
 
@@ -439,6 +441,93 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         throw new DigiAiError(403, "operator_required", "Operator access is required for economic acceptance.");
       }
       const result = await runEconomicAcceptance(store, caller.id);
+      return reply.send({ service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/v1/objectives", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const body = parseObjectiveBody(req.body, config);
+      const operator = isOperatorCaller(config, identity.caller);
+      const result = await createObjective({
+        deps,
+        actor: identity.actor,
+        caller: identity.caller,
+        body,
+        accessToken: readAccessToken(req.headers),
+        allowFixture: !config.isProd || operator,
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get("/v1/objectives/:objectiveId", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const objectiveId = String((req.params as { objectiveId?: string }).objectiveId || "");
+      const result = await inspectObjective({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        objectiveId,
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/v1/objectives/:objectiveId/cancel", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const objectiveId = String((req.params as { objectiveId?: string }).objectiveId || "");
+      const result = await cancelObjective({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        objectiveId,
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/v1/objectives/:objectiveId/advance", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const objectiveId = String((req.params as { objectiveId?: string }).objectiveId || "");
+      const operator = isOperatorCaller(config, identity.caller);
+      const result = await advanceObjective({
+        deps,
+        actor: identity.actor,
+        caller: identity.caller,
+        objectiveId,
+        accessToken: readAccessToken(req.headers),
+        allowFixture: !config.isProd || operator,
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/objectives/acceptance", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      if (config.isProd && !isOperatorCaller(config, identity.caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for orchestration acceptance.");
+      }
+      const result = await runOrchestrationAcceptance({
+        deps,
+        actor: identity.actor,
+        caller: identity.caller,
+      });
       return reply.send({ service: "digi-ai", ...result });
     } catch (err) {
       return sendError(reply, err);

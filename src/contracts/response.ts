@@ -165,4 +165,20 @@ export type HealthResponse = {
       supported: boolean;
     };
   };
+  orchestration?: {
+    supported: boolean;
+    durable: boolean;
+    backend: "memory" | "postgres" | "file";
+    planner: {
+      configured: boolean;
+      runtimeVerified: boolean;
+    };
+    execution: {
+      maxSteps: number;
+      maxParallelSteps: number;
+    };
+    economics: {
+      mode: EconomicsMode;
+    };
+  };
 };

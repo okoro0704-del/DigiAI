@@ -9,6 +9,7 @@ import type {
   CreditReservation,
   ReservationStatus,
 } from "../contracts/credits.js";
+import type { DigiAiExecutionPlan, DigiAiExecutionStep, DigiAiObjective } from "../contracts/orchestration.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
 import { creditCursor, deriveCreditBalance, parseCreditCursor } from "../credits/balance.js";
@@ -126,6 +127,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS credit_reservations_request
 CREATE UNIQUE INDEX IF NOT EXISTS credit_reservations_idempotency
   ON credit_reservations (account_id, idempotency_key)
   WHERE idempotency_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS ai_objectives (
+  objective_id TEXT PRIMARY KEY,
+  application_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  idempotency_key TEXT,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ai_objectives_idempotency
+  ON ai_objectives (application_id, actor_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS ai_execution_plans (
+  plan_id TEXT PRIMARY KEY,
+  objective_id TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_execution_steps (
+  step_id TEXT PRIMARY KEY,
+  objective_id TEXT NOT NULL,
+  step_key TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (objective_id, step_key)
+);
 `;
 
 function poolConfig(url: string): PoolConfig {
@@ -797,6 +824,87 @@ export class PostgresStore implements DigiAiStore {
       [accountId, kind, idempotencyKey],
     );
     return result.rows[0] ? toCreditEntry(result.rows[0]) : null;
+  }
+
+  orchestrationStatus(): LedgerStatus {
+    return this.ledgerStatus();
+  }
+
+  async putObjective(row: DigiAiObjective) {
+    await this.ready();
+    if (row.idempotencyKey) {
+      const existing = await this.findObjectiveByIdempotency(row.applicationId, row.actorId, row.idempotencyKey);
+      if (existing && existing.objectiveId !== row.objectiveId) return { inserted: false };
+    }
+    const result = await this.pool.query(
+      `INSERT INTO ai_objectives (objective_id, application_id, actor_id, idempotency_key, payload, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7)
+       ON CONFLICT (objective_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`,
+      [row.objectiveId, row.applicationId, row.actorId, row.idempotencyKey ?? null, JSON.stringify(row), row.createdAt, row.updatedAt],
+    );
+    return { inserted: (result.rowCount ?? 0) > 0 };
+  }
+
+  async getObjective(objectiveId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_objectives WHERE objective_id = $1`, [objectiveId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiObjective) : null;
+  }
+
+  async findObjectiveByIdempotency(applicationId: string, actorId: string, idempotencyKey: string) {
+    await this.ready();
+    const result = await this.pool.query(
+      `SELECT payload FROM ai_objectives WHERE application_id = $1 AND actor_id = $2 AND idempotency_key = $3`,
+      [applicationId, actorId, idempotencyKey],
+    );
+    return result.rows[0] ? (result.rows[0].payload as DigiAiObjective) : null;
+  }
+
+  async putPlan(row: DigiAiExecutionPlan) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_execution_plans (plan_id, objective_id, payload, created_at)
+       VALUES ($1,$2,$3::jsonb,$4)
+       ON CONFLICT (plan_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      [row.planId, row.objectiveId, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async getPlan(objectiveId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_execution_plans WHERE objective_id = $1 ORDER BY created_at ASC LIMIT 1`, [objectiveId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiExecutionPlan) : null;
+  }
+
+  async putStep(row: DigiAiExecutionStep) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_execution_steps (step_id, objective_id, step_key, payload, created_at)
+       VALUES ($1,$2,$3,$4::jsonb,$5)
+       ON CONFLICT (step_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      [row.stepId, row.objectiveId, row.stepKey, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async updateStep(stepId: string, patch: Partial<DigiAiExecutionStep>) {
+    await this.ready();
+    const found = await this.pool.query(`SELECT payload FROM ai_execution_steps WHERE step_id = $1`, [stepId]);
+    if (!found.rows[0]) return null;
+    const next = { ...(found.rows[0].payload as DigiAiExecutionStep), ...patch };
+    await this.pool.query(`UPDATE ai_execution_steps SET payload = $2::jsonb WHERE step_id = $1`, [stepId, JSON.stringify(next)]);
+    return next;
+  }
+
+  async listSteps(objectiveId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_execution_steps WHERE objective_id = $1`, [objectiveId]);
+    return result.rows.map((row) => row.payload as DigiAiExecutionStep);
+  }
+
+  async listObjectives() {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_objectives ORDER BY created_at ASC`);
+    return result.rows.map((row) => row.payload as DigiAiObjective);
   }
 }
 

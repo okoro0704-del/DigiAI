@@ -130,6 +130,22 @@ export function buildHealthResponse(
         supported: true,
       },
     },
+    orchestration: {
+      supported: true,
+      durable: (store?.orchestrationStatus() ?? ledger).durable,
+      backend: (store?.orchestrationStatus() ?? ledger).backend,
+      planner: {
+        configured: true,
+        runtimeVerified: false,
+      },
+      execution: {
+        maxSteps: config.orchestrationMaxSteps,
+        maxParallelSteps: config.orchestrationMaxParallelSteps,
+      },
+      economics: {
+        mode: config.economicsMode,
+      },
+    },
   };
 }
 
