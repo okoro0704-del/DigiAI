@@ -5,7 +5,7 @@ type GeminiGenerateResponse = {
   modelVersion?: string;
   candidates?: Array<{
     finishReason?: string;
-    content?: { parts?: Array<{ text?: string }> };
+    content?: { parts?: Array<{ text?: string; inlineData?: { mimeType?: string; data?: string } }> };
   }>;
   promptFeedback?: { blockReason?: string };
   usageMetadata?: {
@@ -28,6 +28,7 @@ export class GeminiProvider implements IntelligenceProvider {
   ) {}
 
   async invoke(request: ProviderInvokeRequest): Promise<ProviderResult> {
+    if (request.capability === "MUSIC") return this.compose(request);
     const started = Date.now();
     const model = (request.model ?? this.model).replace(/^models\//, "");
     const controller = new AbortController();
@@ -82,6 +83,94 @@ export class GeminiProvider implements IntelligenceProvider {
           cachedTokens: raw?.usageMetadata?.cachedContentTokenCount,
         },
         finishReason: raw?.candidates?.[0]?.finishReason,
+        providerRequestId: raw?.responseId,
+        latencyMs,
+      };
+    } catch (err) {
+      const timeout = err instanceof Error && err.name === "AbortError";
+      return {
+        ok: false,
+        provider: this.name,
+        model,
+        error: timeout ? "timeout" : "unavailable",
+        detail: timeout ? "Provider timed out." : "Provider is unreachable.",
+        latencyMs: Date.now() - started,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async compose(request: ProviderInvokeRequest): Promise<ProviderResult> {
+    const started = Date.now();
+    const model = (request.model ?? "lyria-3-clip-preview").replace(/^models\//, "");
+    const brief = request.messages.filter((row) => row.role === "user").map((row) => row.content).join("\n\n").trim();
+    if (!brief) {
+      return { ok: false, provider: this.name, model, error: "invalid_music_request", detail: "MUSIC requires a creative brief.", latencyMs: 0 };
+    }
+    const timeoutMs = Math.max(this.timeoutMs, 120_000);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": this.apiKey,
+        },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: brief }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO", "TEXT"],
+            ...(request.outputFormat === "wav" ? { response_format: "wav" } : {}),
+          },
+        }),
+      });
+      const latencyMs = Date.now() - started;
+      const raw = (await res.json().catch(() => null)) as GeminiGenerateResponse | null;
+      if (!res.ok) {
+        return { ok: false, provider: this.name, model, ...classifyGeminiHttpError(res.status, raw), latencyMs };
+      }
+      if (raw?.promptFeedback?.blockReason || isSafetyFinish(raw?.candidates?.[0]?.finishReason)) {
+        return {
+          ok: false,
+          provider: this.name,
+          model,
+          error: "safety_refused",
+          detail: "The provider refused this request under its safety policy.",
+          latencyMs,
+        };
+      }
+      const parts = raw?.candidates?.[0]?.content?.parts ?? [];
+      const text = parts.map((part) => part.text ?? "").join("").trim();
+      const audio = parts.find((part) => part.inlineData?.data);
+      if (!audio?.inlineData?.data) {
+        return { ok: false, provider: this.name, model, error: "generation_failed", detail: "The provider did not return generated music audio.", latencyMs };
+      }
+      const bytes = Buffer.from(audio.inlineData.data, "base64");
+      const clip = model.includes("clip");
+      return {
+        ok: true,
+        provider: this.name,
+        model: raw?.modelVersion ?? model,
+        text: text || "Generated original musical audio. This is synthesized music, not a published song.",
+        media: [{
+          mimeType: audio.inlineData.mimeType || (request.outputFormat === "wav" ? "audio/wav" : "audio/mpeg"),
+          byteSize: bytes.length,
+          contentBase64: bytes.toString("base64"),
+          durationSeconds: clip ? 30 : request.durationSeconds,
+          requestedDurationSeconds: request.durationSeconds,
+          sampleRate: 44100,
+          channels: 2,
+        }],
+        usage: {
+          trackCount: 1,
+          generatedSeconds: clip ? 30 : undefined,
+          inputCharacters: brief.length,
+          outputBytes: bytes.length,
+          providerNativeUnitAmount: 1,
+        },
         providerRequestId: raw?.responseId,
         latencyMs,
       };

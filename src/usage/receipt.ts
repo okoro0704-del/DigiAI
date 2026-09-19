@@ -18,6 +18,10 @@ export function nativeUsageFromTokens(input?: {
   characterCount?: number;
   inputBytes?: number;
   outputBytes?: number;
+  trackCount?: number;
+  generatedAudioMinutes?: number;
+  inputCharacters?: number;
+  providerNativeUnitAmount?: number;
 }): NativeUsage | undefined {
   if (!input) return undefined;
   const native: NativeUsage = {};
@@ -35,6 +39,10 @@ export function nativeUsageFromTokens(input?: {
   if (typeof input.characterCount === "number") native.characterCount = input.characterCount;
   if (typeof input.inputBytes === "number") native.inputBytes = input.inputBytes;
   if (typeof input.outputBytes === "number") native.outputBytes = input.outputBytes;
+  if (typeof input.trackCount === "number") native.trackCount = input.trackCount;
+  if (typeof input.generatedAudioMinutes === "number") native.generatedAudioMinutes = input.generatedAudioMinutes;
+  if (typeof input.inputCharacters === "number") native.inputCharacters = input.inputCharacters;
+  if (typeof input.providerNativeUnitAmount === "number") native.providerNativeUnitAmount = input.providerNativeUnitAmount;
   return Object.keys(native).length ? native : undefined;
 }
 
@@ -92,6 +100,11 @@ export function buildUsageRecord(input: {
     currency: cost.currency,
     estimatedProviderCost: cost.estimatedProviderCost,
     actualProviderCost: null,
+    providerNativeUnits: input.nativeUsage?.providerNativeUnitAmount
+      ? { type: "generation", amount: input.nativeUsage.providerNativeUnitAmount }
+      : input.nativeUsage?.trackCount
+        ? { type: "generation", amount: input.nativeUsage.trackCount }
+        : null,
     digiAiUnits: null,
     errorClass: input.errorClass,
     startedAt: input.startedAt,
@@ -158,6 +171,7 @@ export function snapshotFromRecord(row: UsageRecord): UsageSnapshot {
     actualProviderCost: row.actualProviderCost ?? null,
     pricingVersion: row.pricingVersion ?? null,
     currency: row.currency ?? null,
+    providerNativeUnits: row.providerNativeUnits ?? null,
     digiAiUnits: null,
     latencyMs: row.latencyMs,
     success: row.success,

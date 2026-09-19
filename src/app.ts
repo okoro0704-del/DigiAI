@@ -3,9 +3,10 @@ import type { AppConfig } from "./config.js";
 import { isCapabilityId } from "./contracts/capabilities.js";
 import { isPrivacyClass } from "./contracts/privacy.js";
 import { CONTEXT_SOURCES, isContextSourceId, isDigiAiMode, type AskConstraints, type DigiAiAskInput } from "./contracts/request.js";
-import { isAudioOutputFormat, isAudioSourceType, isImageOperation, isImageSourceType, isSizeClass, isSpeechOperation, type AudioInputReference, type ImageInputReference } from "./contracts/media.js";
+import { isAudioOutputFormat, isAudioSourceType, isImageOperation, isImageSourceType, isMusicOperation, isSizeClass, isSpeechOperation, type AudioInputReference, type ImageInputReference } from "./contracts/media.js";
+import { isMusicOutputFormat, isVocalMode } from "./contracts/music.js";
 import { isSpeechTask } from "./contracts/speech.js";
-import { persistAudioAcceptanceFixture, persistDriveAcceptanceFixture } from "./media/acceptance.js";
+import { persistAudioAcceptanceFixture, persistDriveAcceptanceFixture, persistMusicAcceptanceFixture } from "./media/acceptance.js";
 import { authenticateCaller } from "./identity/resolve.js";
 import { createDrive } from "./media/factory.js";
 import type { SovereignDrive } from "./media/drive.js";
@@ -65,7 +66,11 @@ function rejectClientRouteOverride(body: Record<string, unknown>) {
     "voiceprint" in body ||
     "voiceMatch" in body ||
     "biometricVoice" in body ||
-    "cloneFromAudio" in body
+    "cloneFromAudio" in body ||
+    "artist" in body ||
+    "artistName" in body ||
+    "soundLike" in body ||
+    "imitateArtist" in body
   ) {
     throw new DigiAiError(400, "invalid_request", "Provider and model selection is reserved to Digi AI.");
   }
@@ -102,7 +107,7 @@ function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): Di
   const actor = body.actor && typeof body.actor === "object" ? (body.actor as DigiAiAskInput["actor"]) : undefined;
   const draft = body.draft && typeof body.draft === "object" ? (body.draft as DigiAiAskInput["draft"]) : undefined;
   const constraints = parseConstraints(body.constraints);
-  if (body.operation !== undefined && !isImageOperation(body.operation) && !isSpeechOperation(body.operation)) {
+  if (body.operation !== undefined && !isImageOperation(body.operation) && !isSpeechOperation(body.operation) && !isMusicOperation(body.operation)) {
     throw new DigiAiError(400, "invalid_request", "Unknown media operation.");
   }
   return {
@@ -116,7 +121,7 @@ function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): Di
     draft,
     correlationId: typeof body.correlationId === "string" ? body.correlationId : undefined,
     idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : undefined,
-    operation: isImageOperation(body.operation) || isSpeechOperation(body.operation) ? body.operation : undefined,
+    operation: isImageOperation(body.operation) || isSpeechOperation(body.operation) || isMusicOperation(body.operation) ? body.operation : undefined,
     images: parseImages(body.images ?? body.media),
     audio: parseAudio(body.audio),
     actor,
@@ -139,9 +144,13 @@ function parseConstraints(raw: unknown): AskConstraints | undefined {
     body.cloneVoice !== undefined ||
     body.voiceprint !== undefined ||
     body.voiceMatch !== undefined ||
-    body.biometricVoice !== undefined
+    body.biometricVoice !== undefined ||
+    body.artist !== undefined ||
+    body.artistName !== undefined ||
+    body.soundLike !== undefined ||
+    body.imitateArtist !== undefined
   ) {
-    throw new DigiAiError(400, "invalid_request", "Provider voice identifiers are reserved to Digi AI.");
+    throw new DigiAiError(400, "invalid_request", "Provider voice identifiers and artist-imitation fields are reserved or unsupported.");
   }
   return {
     structuredOutput: body.structuredOutput === true,
@@ -161,6 +170,14 @@ function parseConstraints(raw: unknown): AskConstraints | undefined {
     timestamps: body.timestamps === true,
     speakingRate: typeof body.speakingRate === "number" ? body.speakingRate : undefined,
     audioOutputFormat: isAudioOutputFormat(body.audioOutputFormat) ? body.audioOutputFormat : undefined,
+    durationSeconds: typeof body.durationSeconds === "number" ? body.durationSeconds : undefined,
+    vocalMode: isVocalMode(body.vocalMode) ? body.vocalMode : undefined,
+    mood: typeof body.mood === "string" ? body.mood : undefined,
+    tempoBpm: typeof body.tempoBpm === "number" ? body.tempoBpm : undefined,
+    genre: typeof body.genre === "string" ? body.genre : undefined,
+    structure: typeof body.structure === "string" ? body.structure : undefined,
+    lyrics: typeof body.lyrics === "string" ? body.lyrics : undefined,
+    musicOutputFormat: isMusicOutputFormat(body.musicOutputFormat) ? body.musicOutputFormat : undefined,
   };
 }
 
@@ -430,6 +447,29 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         service: "digi-ai",
         note: "DRIVE BRIDGE ACCEPTANCE. Not real AI image generation.",
         ...result,
+      });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/media/music-acceptance", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const caller = authenticateCaller(config, req.headers);
+      if (!caller) throw new DigiAiError(401, "unauthenticated_caller", "Caller identity is required.");
+      if (config.isProd && !isOperatorCaller(config, caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for music Drive acceptance.");
+      }
+      const result = await persistMusicAcceptanceFixture({
+        drive: deps.drive,
+        actorTrustId: caller.id,
+        callerId: caller.id,
+        tenantId: config.sovereignDriveAcceptanceTenant,
+      });
+      return reply.code(result.ok ? 200 : 502).send({
+        service: "digi-ai",
+        ...result,
+        note: "MUSIC DRIVE ACCEPTANCE. Safe fixture through Digi AI media persistence. Not real music generation.",
       });
     } catch (err) {
       return sendError(reply, err);

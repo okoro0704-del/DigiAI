@@ -135,13 +135,12 @@ test("2 Gemini model registers", () => {
   expect(model?.pricingRef).toBe("gemini:gemini-2.0-flash");
 });
 
-test("3 Gemini capabilities map to text only", () => {
+test("3 Gemini capabilities map to text plus MUSIC, not speech or image", () => {
   const gemini = getProviderCatalog("gemini");
-  expect(gemini?.capabilities).toEqual([...TEXT_CAPABILITIES]);
+  expect(gemini?.capabilities).toEqual([...TEXT_CAPABILITIES, "MUSIC"]);
   expect(gemini?.capabilities).not.toContain("IMAGE");
   expect(gemini?.capabilities).not.toContain("VIDEO");
   expect(gemini?.capabilities).not.toContain("VOICE");
-  expect(gemini?.capabilities).not.toContain("MUSIC");
   expect(gemini?.capabilities).not.toContain("SPEECH_TO_TEXT");
   expect(gemini?.capabilities).not.toContain("TEXT_TO_SPEECH");
 });

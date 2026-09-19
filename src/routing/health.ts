@@ -101,6 +101,12 @@ export function buildHealthResponse(
     voiceProfiles: {
       configuredCount: enabledVoiceProfileCount(),
     },
+    music: {
+      canonicalPersistence: {
+        available: Boolean(drive.status().write),
+        status: drive.status().write ? "available" : "unavailable",
+      },
+    },
   };
 }
 

@@ -94,6 +94,11 @@ export function usageFromLedger(entry: LedgerEntry, extras?: Partial<UsageRecord
     currency: entry.currency,
     estimatedProviderCost: entry.estimatedProviderCost,
     actualProviderCost: entry.actualProviderCost,
+    providerNativeUnits: entry.nativeUsage.providerNativeUnitAmount
+      ? { type: "generation", amount: entry.nativeUsage.providerNativeUnitAmount }
+      : entry.nativeUsage.trackCount
+        ? { type: "generation", amount: entry.nativeUsage.trackCount }
+        : null,
     digiAiUnits: null,
     errorClass: entry.errorClass,
     startedAt: entry.startedAt,

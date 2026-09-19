@@ -22,6 +22,9 @@ export type DriveWriteInput = DriveAuthContext & {
   generated?: boolean;
   width?: number;
   height?: number;
+  durationSeconds?: number;
+  sampleRate?: number;
+  channels?: number;
 };
 
 export type DriveAuthResult =

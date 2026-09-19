@@ -702,7 +702,7 @@ test("43 health speech capabilities and voice profiles", async () => {
   expect(body.capabilities.TEXT_TO_SPEECH.configured).toBe(true);
   expect(body.capabilities.VOICE.supported).toBe(true);
   expect(body.capabilities.VOICE.configured).toBe(true);
-  expect(body.capabilities.MUSIC.supported).toBe(false);
+  expect(body.capabilities.MUSIC.supported).toBe(true);
   expect(body.capabilities.VIDEO.supported).toBe(false);
   expect(body.audio.canonicalPersistence.status).toBe("unavailable");
   expect(body.voiceProfiles.configuredCount).toBe(listPublicVoiceProfiles().length);

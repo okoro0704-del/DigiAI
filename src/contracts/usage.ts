@@ -17,6 +17,10 @@ export type NativeUsage = {
   characterCount?: number;
   inputBytes?: number;
   outputBytes?: number;
+  trackCount?: number;
+  generatedAudioMinutes?: number;
+  inputCharacters?: number;
+  providerNativeUnitAmount?: number;
   [key: string]: number | undefined;
 };
 
@@ -45,6 +49,8 @@ export type UsageRecord = {
   currency?: string | null;
   estimatedProviderCost?: number | null;
   actualProviderCost?: number | null;
+  /** Provider-native generation units. Never Digi AI credits. */
+  providerNativeUnits?: { type: string; amount: number } | null;
   /** Phase 2A is unpriced. Never a fake credit balance. */
   digiAiUnits: null;
   errorClass?: string;

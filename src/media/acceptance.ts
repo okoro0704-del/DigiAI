@@ -115,3 +115,60 @@ export async function persistAudioAcceptanceFixture(input: {
     readVerified: read.ok,
   };
 }
+
+export const MUSIC_DRIVE_ACCEPTANCE_LABEL = "MUSIC_DRIVE_ACCEPTANCE";
+
+export async function persistMusicAcceptanceFixture(input: {
+  drive: SovereignDrive;
+  actorTrustId: string;
+  callerId: string;
+  tenantId?: string;
+  accessToken?: string;
+}) {
+  const bytes = tinyWavFixture(0.05);
+  const written = await input.drive.writeGenerated({
+    actorTrustId: input.actorTrustId,
+    callerId: input.callerId,
+    tenantId: input.tenantId,
+    accessToken: input.accessToken,
+    mimeType: "audio/wav",
+    bytes,
+    filename: "music-drive-acceptance.wav",
+    mediaType: "audio/wav",
+    capability: "MUSIC",
+    providerId: "none",
+    modelId: "fixture",
+    sourceAssetIds: [],
+    executionRef: MUSIC_DRIVE_ACCEPTANCE_LABEL,
+    generated: true,
+    durationSeconds: 0.05,
+    sampleRate: 8000,
+    channels: 1,
+  });
+  if (!written.ok) {
+    return {
+      ok: false as const,
+      label: MUSIC_DRIVE_ACCEPTANCE_LABEL,
+      error: written.error,
+      detail: written.detail,
+    };
+  }
+  const read = await input.drive.readAsset({
+    actorTrustId: input.actorTrustId,
+    callerId: input.callerId,
+    tenantId: input.tenantId,
+    accessToken: input.accessToken,
+    assetId: written.reference.assetId,
+  });
+  return {
+    ok: true as const,
+    label: MUSIC_DRIVE_ACCEPTANCE_LABEL,
+    note: "Safe music fixture through Digi AI media persistence. Not real music generation.",
+    canonicalAssetReference: written.reference.assetId,
+    system: written.reference.system,
+    tenantId: written.reference.tenantId,
+    hash: written.hash,
+    sizeBytes: written.sizeBytes,
+    readVerified: read.ok,
+  };
+}

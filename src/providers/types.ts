@@ -13,6 +13,9 @@ export type ProviderUsage = {
   characterCount?: number;
   inputBytes?: number;
   outputBytes?: number;
+  trackCount?: number;
+  inputCharacters?: number;
+  providerNativeUnitAmount?: number;
 };
 
 export type ProviderMediaOutput = {
@@ -21,6 +24,9 @@ export type ProviderMediaOutput = {
   height?: number;
   byteSize?: number;
   durationSeconds?: number;
+  requestedDurationSeconds?: number;
+  sampleRate?: number;
+  channels?: number;
   contentBase64?: string;
   providerTempUrl?: string;
   expiresAt?: string;
@@ -66,7 +72,10 @@ export type ProviderFailure = {
     | "unsupported_codec"
     | "transcription_failed"
     | "tts_failed"
-    | "voice_profile_invalid";
+    | "voice_profile_invalid"
+    | "invalid_music_request"
+    | "duration_too_long"
+    | "unsupported_format";
   detail: string;
   latencyMs: number;
 };
@@ -91,7 +100,7 @@ export type ProviderInvokeRequest = {
   model?: string;
   structuredOutput?: boolean;
   capability?: string;
-  operation?: "generate" | "edit" | "analyze" | "transcribe" | "translate" | "speak" | "converse";
+  operation?: "generate" | "edit" | "analyze" | "transcribe" | "translate" | "speak" | "converse" | "compose";
   images?: ProviderImageInput[];
   imageCount?: number;
   size?: string;
@@ -103,6 +112,8 @@ export type ProviderInvokeRequest = {
   timestamps?: boolean;
   providerVoiceId?: string;
   speakingRate?: number;
+  durationSeconds?: number;
+  vocalMode?: "instrumental" | "generated_vocal" | "auto";
 };
 
 export interface IntelligenceProvider {

@@ -6,11 +6,12 @@ export type PricingDimensionKind =
   | "audio_seconds"
   | "video_seconds"
   | "generated_seconds"
-  | "characters";
+  | "characters"
+  | "generation";
 
 export type PricingDimension = {
   kind: PricingDimensionKind;
-  unit: "token" | "image" | "second" | "character";
+  unit: "token" | "image" | "second" | "character" | "generation";
   perMillion?: number;
   perUnit?: number;
 };
@@ -94,6 +95,24 @@ export const PRICING_CATALOG: PricingRecord[] = [
     currency: "USD",
     status: "active",
     dimensions: [{ kind: "characters", unit: "character", perMillion: 15 }],
+  },
+  {
+    providerId: "gemini",
+    modelId: "lyria-3-clip-preview",
+    pricingVersion: "gemini-lyria-3-clip-preview-2026-09-01",
+    effectiveFrom: "2026-09-01T00:00:00.000Z",
+    currency: "USD",
+    status: "active",
+    dimensions: [{ kind: "generation", unit: "generation", perUnit: 0.04 }],
+  },
+  {
+    providerId: "gemini",
+    modelId: "lyria-3.5",
+    pricingVersion: "gemini-lyria-3.5-2026-09-01",
+    effectiveFrom: "2026-09-01T00:00:00.000Z",
+    currency: "USD",
+    status: "active",
+    dimensions: [{ kind: "generation", unit: "generation", perUnit: 0.08 }],
   },
   {
     providerId: "gemini",

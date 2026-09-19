@@ -29,6 +29,7 @@ import {
   transcriptAsData,
   voiceResult,
 } from "./speech.js";
+import { buildMusicBrief, expectedMusicDuration, musicAnswer, parseMusicRequest, selectMusicModel } from "./music.js";
 import { ProviderPool } from "../providers/pool.js";
 import type { IntelligenceProvider, ProviderResult } from "../providers/types.js";
 import { executeWithFailover } from "../routing/execute.js";
@@ -174,6 +175,7 @@ export async function handleAsk(input: {
     capability !== "SPEECH_TO_TEXT" &&
     capability !== "TEXT_TO_SPEECH" &&
     capability !== "VOICE" &&
+    capability !== "MUSIC" &&
     body.constraints?.allowFailover !== false &&
     deps.config.allowFailover;
   const forceProvider =
@@ -249,6 +251,29 @@ export async function handleAsk(input: {
       },
       receiptId,
     };
+  }
+
+  if (capability === "MUSIC") {
+    return handleMusicAsk({
+      deps,
+      actor,
+      caller,
+      body,
+      requestId,
+      accessToken,
+      correlationId,
+      capability,
+      privacyClass,
+      operation: "compose",
+      sources,
+      provenance,
+      sourceUnavailable,
+      startedAt,
+      drive,
+      tenantId,
+      pool,
+      forceProvider,
+    });
   }
 
   if (capability === "SPEECH_TO_TEXT" || capability === "TEXT_TO_SPEECH" || capability === "VOICE") {
@@ -838,6 +863,186 @@ async function handleSpeechAsk(input: {
   };
 }
 
+async function handleMusicAsk(input: {
+  deps: EngineDeps;
+  actor: ActorContext;
+  caller: CallerApplication;
+  body: DigiAiAskInput;
+  requestId: string;
+  accessToken?: string;
+  correlationId: string;
+  capability: CapabilityId;
+  privacyClass: string;
+  operation: MediaOperation;
+  sources: string[];
+  provenance: ProvenanceItem[];
+  sourceUnavailable: boolean;
+  startedAt: string;
+  drive: SovereignDrive;
+  tenantId?: string;
+  pool: ProviderPool;
+  forceProvider?: string;
+}): Promise<DigiAiAskResponse> {
+  const music = parseMusicRequest({
+    message: input.body.message,
+    constraints: input.body.constraints,
+    config: input.deps.config,
+  });
+  const selectedModel = selectMusicModel(music);
+  const routedConfig = {
+    ...input.deps.config,
+    defaultModels: { ...input.deps.config.defaultModels, MUSIC: selectedModel },
+  };
+  const count = music.count ?? 1;
+  const brief = buildMusicBrief(music);
+  const media: GeneratedMediaResult[] = [];
+  let lastPlan: Awaited<ReturnType<typeof executeWithFailover>> | undefined;
+  let lastRecorded: Awaited<ReturnType<typeof persistAsk>> | undefined;
+
+  for (let index = 0; index < count; index += 1) {
+    const plan = await executeWithFailover({
+      config: routedConfig,
+      pool: input.pool,
+      capability: "MUSIC",
+      privacyClass: input.privacyClass as import("../contracts/privacy.js").PrivacyClass,
+      allowFailover: false,
+      forceProvider: input.forceProvider,
+      request: {
+        messages: [{ role: "user", content: brief }],
+        capability: "MUSIC",
+        operation: "compose",
+        durationSeconds: music.durationSeconds,
+        vocalMode: music.vocalMode,
+        language: music.language,
+        outputFormat: music.outputFormat,
+      },
+    });
+    lastPlan = plan;
+    if (plan.final?.ok && plan.final.media?.length) {
+      const durations = expectedMusicDuration(plan.final.model ?? selectedModel, music.durationSeconds);
+      const outputs = plan.final.media.map((row) => ({
+        ...row,
+        durationSeconds: row.durationSeconds ?? durations.actualDurationSeconds,
+        requestedDurationSeconds: durations.requestedDurationSeconds,
+        sampleRate: row.sampleRate ?? 44100,
+        channels: row.channels ?? 2,
+      }));
+      const normalized = await normalizeGeneratedMedia({
+        outputs,
+        providerId: plan.final.provider,
+        modelId: plan.final.model,
+        operation: "compose",
+        actorTrustId: input.actor.trustId,
+        applicationId: input.caller.id,
+        sourceAssetIds: [],
+        persistCanonical: music.persistCanonical === true,
+        drive: input.drive,
+        tenantId: input.tenantId,
+        accessToken: input.accessToken,
+        executionRef: input.requestId,
+        idempotencyKey: index === 0 ? input.body.idempotencyKey : undefined,
+        maxTransientBytes: input.deps.config.maxTransientBytes,
+        capability: "MUSIC",
+        logicalRequestId: input.requestId,
+      });
+      media.push(...normalized);
+    }
+    const native = plan.final?.ok
+      ? nativeUsageFromTokens({
+          ...plan.final.usage,
+          trackCount: 1,
+          generatedSeconds: plan.final.media?.[0]?.durationSeconds ?? plan.final.usage.generatedSeconds,
+          generatedAudioMinutes: plan.final.media?.[0]?.durationSeconds
+            ? Number((plan.final.media[0]!.durationSeconds! / 60).toFixed(4))
+            : undefined,
+          inputCharacters: brief.length,
+          providerNativeUnitAmount: 1,
+        })
+      : undefined;
+    lastRecorded = await persistAsk({
+      deps: input.deps,
+      actor: input.actor,
+      caller: input.caller,
+      usageId: newId("use"),
+      receiptId: newId("rcpt"),
+      requestId: input.requestId,
+      attemptIndex: index + 1,
+      correlationId: input.correlationId,
+      entitySlug: input.body.entity?.slug,
+      capability: "MUSIC",
+      privacyClass: input.privacyClass,
+      providerId: plan.final?.provider ?? input.deps.provider.name,
+      modelId: plan.final && plan.final.ok ? plan.final.model : selectedModel,
+      startedAt: input.startedAt,
+      latencyMs: plan.final?.latencyMs ?? 0,
+      success: Boolean(plan.final?.ok),
+      status: !plan.final ? "provider_unavailable" : plan.final.ok ? "completed" : "failed",
+      nativeUsage: native,
+      providerRequestId: plan.final?.ok ? plan.final.providerRequestId : undefined,
+      errorClass: plan.final && !plan.final.ok ? plan.final.error : undefined,
+      operation: "compose",
+      sources: input.sources,
+      routeExplanation: `${plan.explanation}; logicalRequestId=${input.requestId}; track=${index + 1}/${count}`,
+      resultStatus: input.sourceUnavailable ? "source_unavailable" : plan.final?.ok || media.length ? "completed" : "failed",
+      idempotencyKey: index === count - 1 ? input.body.idempotencyKey : undefined,
+      resultSnapshot: {
+        answer: musicAnswer(media.length || count),
+        media: sanitizeMediaForLedger(media),
+        finishState: plan.final?.ok ? "completed" : "failed",
+        canonicalAssetReference: media.find((row) => row.canonicalAssetReference)?.canonicalAssetReference,
+      },
+    });
+    if (!plan.final?.ok && !media.length) {
+      return {
+        ok: false,
+        service: "digi-ai",
+        error: plan.final?.error === "unavailable" ? "provider_unavailable" : plan.final?.error === "safety_refused" ? "safety_refused" : "failed",
+        message: plan.final?.detail || "Music generation failed.",
+        provenance: input.provenance,
+        usage: snapshotFromRecord(lastRecorded.usage),
+        execution: {
+          requestId: input.requestId,
+          correlationId: input.correlationId,
+          provider: lastRecorded.usage.provider,
+          model: lastRecorded.usage.model,
+          capability: "MUSIC",
+          latencyMs: lastRecorded.usage.latencyMs,
+          sourcesUsed: input.sources,
+          finishState: "failed",
+        },
+        receiptId: lastRecorded.receiptId,
+      };
+    }
+  }
+
+  input.provenance.unshift({
+    kind: "generated",
+    system: "digi-ai",
+    retrievedAt: nowIso(),
+    note: "Generated musical audio. Synthesized, not human-recorded, and not a published song.",
+  });
+  const recorded = lastRecorded!;
+  return {
+    ok: true,
+    service: "digi-ai",
+    answer: musicAnswer(media.length),
+    provenance: input.provenance,
+    usage: snapshotFromRecord(recorded.usage),
+    execution: {
+      requestId: input.requestId,
+      correlationId: input.correlationId,
+      provider: lastPlan?.final?.ok ? lastPlan.final.provider : recorded.usage.provider,
+      model: lastPlan?.final?.ok ? lastPlan.final.model : recorded.usage.model,
+      capability: "MUSIC",
+      latencyMs: recorded.usage.latencyMs,
+      sourcesUsed: input.sources,
+      finishState: "completed",
+    },
+    receiptId: recorded.receiptId,
+    media,
+  };
+}
+
 function failSpeech(
   input: { requestId: string; correlationId: string; capability: string; sources: string[]; provenance: ProvenanceItem[]; deps: EngineDeps },
   recorded: { usage: import("../contracts/usage.js").UsageRecord; receiptId: string },
@@ -967,6 +1172,7 @@ function resolveOperation(capability: string, requested?: MediaOperation): Media
   if (capability === "SPEECH_TO_TEXT") return requested === "translate" ? "translate" : "transcribe";
   if (capability === "TEXT_TO_SPEECH") return "speak";
   if (capability === "VOICE") return "converse";
+  if (capability === "MUSIC") return "compose";
   return requested;
 }
 

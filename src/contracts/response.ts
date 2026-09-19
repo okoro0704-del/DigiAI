@@ -20,6 +20,7 @@ export type UsageSnapshot = {
   actualProviderCost?: number | null;
   pricingVersion?: string | null;
   currency?: string | null;
+  providerNativeUnits?: { type: string; amount: number } | null;
   digiAiUnits: null;
   latencyMs: number;
   success: boolean;
@@ -133,5 +134,11 @@ export type HealthResponse = {
   };
   voiceProfiles?: {
     configuredCount: number;
+  };
+  music?: {
+    canonicalPersistence: {
+      available: boolean;
+      status: "available" | "unavailable";
+    };
   };
 };

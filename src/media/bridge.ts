@@ -128,6 +128,9 @@ export class SovereignDriveMediaBridge implements SovereignDrive {
         byteSize: String(input.bytes.length),
         width: input.width != null ? String(input.width) : "",
         height: input.height != null ? String(input.height) : "",
+        durationSeconds: input.durationSeconds != null ? String(input.durationSeconds) : "",
+        sampleRate: input.sampleRate != null ? String(input.sampleRate) : "",
+        channels: input.channels != null ? String(input.channels) : "",
       }),
     );
     const result = await this.request("POST", "/v1/storage/upload", token, form);

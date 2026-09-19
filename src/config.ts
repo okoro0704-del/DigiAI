@@ -78,6 +78,7 @@ export function loadConfig() {
       IMAGE: env("AI_DEFAULT_MODEL_IMAGE", "gpt-image-1"),
       SPEECH_TO_TEXT: env("AI_DEFAULT_MODEL_STT", "whisper-1"),
       TEXT_TO_SPEECH: env("AI_DEFAULT_MODEL_TTS", "tts-1"),
+      MUSIC: env("AI_DEFAULT_MODEL_MUSIC", "lyria-3-clip-preview"),
     } as Record<string, string>,
     cloudMaxPrivacy: (env("AI_CLOUD_MAX_PRIVACY", "PRIVATE").toUpperCase() || "PRIVATE") as
       | "PUBLIC"
@@ -102,6 +103,10 @@ export function loadConfig() {
     maxAudioBytes: Number(env("MAX_AUDIO_BYTES", "25000000")),
     maxAudioSeconds: Number(env("MAX_AUDIO_SECONDS", "1400")),
     maxTtsChars: Number(env("MAX_TTS_CHARS", "4096")),
+    maxMusicSeconds: Number(env("MAX_MUSIC_SECONDS", "180")),
+    maxMusicOutputs: Number(env("MAX_MUSIC_OUTPUTS", "4")),
+    maxMusicLyricsChars: Number(env("MAX_MUSIC_LYRICS_CHARS", "2000")),
+    musicTimeoutMs: Number(env("MUSIC_TIMEOUT_MS", "120000")),
     sovereignDriveUrl: (
       env("SOVEREIGN_DRIVE_URL") || env("DATAZONE_BASE_URL")
     ).replace(/\/$/, ""),

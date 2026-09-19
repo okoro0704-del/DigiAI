@@ -41,7 +41,9 @@ export type AudioSourceType = ImageSourceType;
 
 export const SPEECH_OPERATIONS = ["transcribe", "translate", "speak", "converse"] as const;
 export type SpeechOperation = (typeof SPEECH_OPERATIONS)[number];
-export type MediaOperation = ImageOperation | SpeechOperation;
+export const MUSIC_OPERATIONS = ["compose"] as const;
+export type MusicOperation = (typeof MUSIC_OPERATIONS)[number];
+export type MediaOperation = ImageOperation | SpeechOperation | MusicOperation;
 
 export const AUDIO_OUTPUT_FORMATS = ["mp3", "wav", "opus", "aac"] as const;
 export type AudioOutputFormat = (typeof AUDIO_OUTPUT_FORMATS)[number];
@@ -63,7 +65,7 @@ export type AudioInputReference = {
 
 export type MediaProvenance = {
   generated: boolean;
-  capability: "IMAGE" | "VISION" | "SPEECH_TO_TEXT" | "TEXT_TO_SPEECH" | "VOICE";
+  capability: "IMAGE" | "VISION" | "SPEECH_TO_TEXT" | "TEXT_TO_SPEECH" | "VOICE" | "MUSIC";
   operation: MediaOperation;
   providerId: string;
   modelId?: string;
@@ -78,7 +80,7 @@ export type MediaProvenance = {
 
 export type GeneratedMediaResult = {
   mediaId: string;
-  capability: "IMAGE" | "TEXT_TO_SPEECH" | "VOICE";
+  capability: "IMAGE" | "TEXT_TO_SPEECH" | "VOICE" | "MUSIC";
   operation: MediaOperation;
   provider: string;
   model?: string;
@@ -86,6 +88,9 @@ export type GeneratedMediaResult = {
   width?: number;
   height?: number;
   durationSeconds?: number;
+  requestedDurationSeconds?: number;
+  sampleRate?: number;
+  channels?: number;
   byteSize?: number;
   voiceProfileId?: string;
   persistenceState: PersistenceState;
@@ -122,6 +127,10 @@ export function isAudioSourceType(value: unknown): value is AudioSourceType {
 
 export function isSpeechOperation(value: unknown): value is SpeechOperation {
   return typeof value === "string" && (SPEECH_OPERATIONS as readonly string[]).includes(value);
+}
+
+export function isMusicOperation(value: unknown): value is MusicOperation {
+  return typeof value === "string" && (MUSIC_OPERATIONS as readonly string[]).includes(value);
 }
 
 export function isAudioOutputFormat(value: unknown): value is AudioOutputFormat {

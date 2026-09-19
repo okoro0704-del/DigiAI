@@ -74,6 +74,7 @@ export async function normalizeGeneratedMedia(input: {
         generated: true,
         width: output.width,
         height: output.height,
+        durationSeconds: output.durationSeconds,
       });
       if (written.ok) {
         persistenceState = "canonical";
@@ -167,6 +168,9 @@ function mediaResult(
     width: output.width,
     height: output.height,
     durationSeconds: output.durationSeconds,
+    requestedDurationSeconds: output.requestedDurationSeconds,
+    sampleRate: output.sampleRate,
+    channels: output.channels,
     byteSize: output.byteSize,
     voiceProfileId: input.voiceProfileId,
     persistenceState,
