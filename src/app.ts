@@ -16,7 +16,10 @@ import { newId } from "./lib/crypto.js";
 import { DigiAiError } from "./lib/http.js";
 import { createProvider } from "./providers/router.js";
 import type { IntelligenceProvider } from "./providers/types.js";
-import { createStore, type DigiAiStore } from "./store/memory.js";
+import { createStore } from "./store/index.js";
+import type { DigiAiStore } from "./store/types.js";
+import type { LedgerQuery } from "./contracts/ledger.js";
+import { isOperatorCaller, readUsageReceipt, readUsageSummary, scopedLedgerQuery } from "./usage/query.js";
 import { renderDigiAiPage } from "./ui/page.js";
 
 export type DigiAiAppOptions = {
@@ -27,9 +30,23 @@ export type DigiAiAppOptions = {
   store?: DigiAiStore;
 };
 
+const FORBIDDEN_ECONOMIC_FIELDS = [
+  "estimatedProviderCost",
+  "actualProviderCost",
+  "digiAiUnits",
+  "pricingVersion",
+  "applicationId",
+  "callerId",
+] as const;
+
 function rejectClientRouteOverride(body: Record<string, unknown>) {
   if ("provider" in body || "model" in body || "providerId" in body || "modelId" in body) {
     throw new DigiAiError(400, "invalid_request", "Provider and model selection is reserved to Digi AI.");
+  }
+  for (const field of FORBIDDEN_ECONOMIC_FIELDS) {
+    if (field in body) {
+      throw new DigiAiError(400, "invalid_request", "Cost and commercial fields are reserved to Digi AI.");
+    }
   }
 }
 
@@ -107,7 +124,7 @@ function parseTwinBriefBody(raw: unknown): TwinBriefInput {
 export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
   const app = Fastify({ logger: false });
   const provider = createProvider(config, options.provider);
-  const store = options.store ?? createStore(config.dataDir);
+  const store = options.store ?? createStore(config);
   const deps = {
     config,
     provider,
@@ -117,7 +134,73 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
   };
   const resolver = options.resolver ?? createTrustIdResolver(config);
 
-  app.get("/health", async (): Promise<HealthResponse> => buildHealthResponse(config, provider));
+  app.get("/health", async (): Promise<HealthResponse> => buildHealthResponse(config, provider, store));
+
+  const sendError = (reply: FastifyReply, err: unknown, extra: Record<string, unknown> = {}) => {
+    if (err instanceof DigiAiError) {
+      return reply.code(err.status).send({ ok: false, service: "digi-ai", error: err.code, message: err.message, ...extra });
+    }
+    return reply.code(500).send({ ok: false, service: "digi-ai", error: "internal_error", message: "Digi AI could not complete that request.", ...extra });
+  };
+
+  const handleUsageSummary = async (req: FastifyRequest, reply: FastifyReply, operatorOnly: boolean) => {
+    try {
+      const identity = await resolveRequestIdentity({
+        config,
+        headers: req.headers,
+        url: req.url,
+        resolver,
+      });
+      const operator = isOperatorCaller(config, identity.caller);
+      if (operatorOnly && !operator) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for that usage query.");
+      }
+      const requested = parseUsageQuery(req.query);
+      const query = scopedLedgerQuery({
+        caller: identity.caller,
+        actor: identity.actor,
+        requested,
+        operator,
+      });
+      const summary = await readUsageSummary(store, query);
+      return reply.send({
+        ok: true,
+        service: "digi-ai",
+        scope: operator ? "operator" : "tenant",
+        query,
+        summary,
+      });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  };
+
+  app.get("/internal/usage/summary", async (req, reply) => handleUsageSummary(req, reply, true));
+  app.get("/v1/usage/summary", async (req, reply) => handleUsageSummary(req, reply, false));
+
+  app.get("/internal/usage/receipts/:id", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({
+        config,
+        headers: req.headers,
+        url: req.url,
+        resolver,
+      });
+      const operator = isOperatorCaller(config, identity.caller);
+      const id = String((req.params as { id?: string }).id || "");
+      const row = await readUsageReceipt(store, id, {
+        operator,
+        callerId: identity.caller.id,
+        actorId: identity.actor.trustId,
+      });
+      if (!row) {
+        return reply.code(404).send({ ok: false, service: "digi-ai", error: "not_found", message: "Usage receipt not found." });
+      }
+      return reply.send({ ok: true, service: "digi-ai", receipt: sanitizeLedger(row) });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
 
   app.get("/", async (_req, reply) => {
     reply.header("x-content-type-options", "nosniff");
@@ -218,4 +301,27 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
   }
 
   return Object.assign(app, { store, provider });
+}
+
+function parseUsageQuery(raw: unknown): LedgerQuery {
+  const query = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const read = (name: string) => typeof query[name] === "string" ? String(query[name]) : undefined;
+  return {
+    from: read("from"),
+    to: read("to"),
+    actorId: read("actorId"),
+    tenantId: read("tenantId"),
+    applicationId: read("applicationId"),
+    capability: read("capability"),
+    providerId: read("providerId") || read("provider"),
+    modelId: read("modelId") || read("model"),
+    status: read("status"),
+  };
+}
+
+function sanitizeLedger(row: import("./contracts/ledger.js").LedgerEntry) {
+  return {
+    ...row,
+    digiAiUnits: null,
+  };
 }

@@ -1,8 +1,7 @@
 import type { UsageSnapshot } from "../contracts/response.js";
 import type { NativeUsage, RequestReceipt, UsageRecord } from "../contracts/usage.js";
-import { estimateTokenCost } from "../registry/pricing.js";
-import { listCatalogModels } from "../registry/models.js";
 import { nowIso } from "../lib/crypto.js";
+import { estimateProviderCost } from "./cost.js";
 
 export function nativeUsageFromTokens(input?: {
   inputTokens?: number;
@@ -27,7 +26,9 @@ export function buildUsageRecord(input: {
   callerId: string;
   entitySlug?: string;
   tenantId?: string;
+  receiptId?: string;
   capability?: string;
+  privacyClass?: string;
   providerId: string;
   modelId?: string;
   startedAt?: string;
@@ -39,14 +40,13 @@ export function buildUsageRecord(input: {
   providerRequestId?: string;
   errorClass?: string;
 }): UsageRecord {
-  const pricingRef = input.modelId
-    ? listCatalogModels().find((row) => row.id === input.modelId && row.providerId === input.providerId)?.pricingRef
-    : undefined;
-  const estimated = estimateTokenCost(pricingRef, {
-    inputTokens: input.nativeUsage?.inputTokens,
-    outputTokens: input.nativeUsage?.outputTokens,
-  });
   const completedAt = input.completedAt ?? nowIso();
+  const cost = estimateProviderCost({
+    providerId: input.providerId,
+    modelId: input.modelId,
+    nativeUsage: input.nativeUsage,
+    at: completedAt,
+  });
   return {
     usageId: input.usageId,
     requestId: input.requestId,
@@ -56,7 +56,9 @@ export function buildUsageRecord(input: {
     applicationId: input.callerId,
     entitySlug: input.entitySlug,
     tenantId: input.tenantId,
+    receiptId: input.receiptId,
     capability: input.capability,
+    privacyClass: input.privacyClass,
     provider: input.providerId,
     providerId: input.providerId,
     model: input.modelId,
@@ -66,7 +68,9 @@ export function buildUsageRecord(input: {
     totalTokens: input.nativeUsage?.totalTokens,
     nativeUsage: input.nativeUsage,
     providerRequestId: input.providerRequestId,
-    estimatedProviderCost: estimated,
+    pricingVersion: cost.pricingVersion,
+    currency: cost.currency,
+    estimatedProviderCost: cost.estimatedProviderCost,
     actualProviderCost: null,
     digiAiUnits: null,
     errorClass: input.errorClass,
@@ -128,6 +132,8 @@ export function snapshotFromRecord(row: UsageRecord): UsageSnapshot {
     nativeUsage: row.nativeUsage,
     estimatedProviderCost: row.estimatedProviderCost ?? null,
     actualProviderCost: row.actualProviderCost ?? null,
+    pricingVersion: row.pricingVersion ?? null,
+    currency: row.currency ?? null,
     digiAiUnits: null,
     latencyMs: row.latencyMs,
     success: row.success,

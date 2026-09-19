@@ -310,19 +310,21 @@ test("cross-tenant usage records stay isolated", async () => {
     method: "POST",
     url: "/v1/ask",
     headers: callerHeaders("actor-a", "tenant-a", "a-secret"),
-    payload: { message: "hello", entity: { slug: "life-a", tenantId: "tenant-a" } },
+    payload: { message: "hello", entity: { slug: "life-a", tenantId: "ignored-client-tenant" } },
   });
   await live.app.inject({
     method: "POST",
     url: "/v1/ask",
     headers: callerHeaders("actor-b", "tenant-b", "b-secret"),
-    payload: { message: "hello", entity: { slug: "life-b", tenantId: "tenant-b" } },
+    payload: { message: "hello", entity: { slug: "life-b", tenantId: "ignored-client-tenant" } },
   });
   const usage = await live.store.listUsage();
   expect(usage).toHaveLength(2);
-  expect(usage[0]?.tenantId).toBe("tenant-a");
+  expect(usage[0]?.tenantId).toBe("life-a");
+  expect(usage[0]?.applicationId).toBe("tenant-a");
   expect(usage[0]?.actorTrustId).toBe("TD-A");
-  expect(usage[1]?.tenantId).toBe("tenant-b");
+  expect(usage[1]?.tenantId).toBe("life-b");
+  expect(usage[1]?.applicationId).toBe("tenant-b");
   expect(usage[1]?.actorTrustId).toBe("TD-B");
   expect(usage[0]?.actorTrustId).not.toBe(usage[1]?.actorTrustId);
 });

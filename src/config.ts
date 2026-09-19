@@ -72,6 +72,11 @@ export function loadConfig() {
       | "PRIVATE"
       | "HIGHLY_SENSITIVE",
     providerTimeoutMs: Number(env("PROVIDER_TIMEOUT_MS", "20000")),
+    databaseUrl: env("DATABASE_URL") || env("DIGI_AI_DATABASE_URL"),
+    operatorCallers: env("DIGI_AI_OPERATOR_CALLERS")
+      .split(",")
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean),
     dataDir: env("DATA_DIR"),
     allowAttestedActor: env("DIGI_AI_ALLOW_ATTESTED_ACTOR").toLowerCase() === "true",
     maxMessageChars: Number(env("MAX_MESSAGE_CHARS", "8000")),

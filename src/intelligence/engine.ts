@@ -4,7 +4,7 @@ import { defaultPrivacyClass, isPrivacyClass } from "../contracts/privacy.js";
 import type { DigiAiAskInput } from "../contracts/request.js";
 import type { DigiAiAskResponse } from "../contracts/response.js";
 import type { ProvenanceItem } from "../contracts/provenance.js";
-import type { RequestReceipt } from "../contracts/usage.js";
+import type { NativeUsage } from "../contracts/usage.js";
 import type { DigiNewsReader, DigiPediaReader, NewsPage, DigiPediaPage } from "../adapters/types.js";
 import { clip, newId, nowIso } from "../lib/crypto.js";
 import { DigiAiError } from "../lib/http.js";
@@ -13,8 +13,10 @@ import { SYSTEM_POLICY, wrapCanonicalData } from "../lib/policy.js";
 import type { IntelligenceProvider } from "../providers/types.js";
 import { resolveRequestedCapability } from "../routing/resolve-capability.js";
 import { routeCapability } from "../routing/runtime.js";
+import { buildLedgerEntry } from "../usage/ledger.js";
+import { persistExecution } from "../usage/persist.js";
 import { buildRequestReceipt, buildUsageRecord, nativeUsageFromTokens, snapshotFromRecord } from "../usage/receipt.js";
-import type { DigiAiStore } from "../store/memory.js";
+import type { DigiAiStore } from "../store/types.js";
 import { proposeObjective } from "./objectives.js";
 import { selectSources } from "./sources.js";
 
@@ -137,46 +139,35 @@ export async function handleAsk(input: {
 
   if (!routed.decision.ok) {
     const error = routed.decision.error === "unsupported_capability" ? "unsupported_capability" : "provider_unavailable";
-    const usageRow = buildUsageRecord({
+    const recorded = await persistAsk({
+      deps,
+      actor,
+      caller,
       usageId,
+      receiptId,
       requestId,
       correlationId,
-      actorTrustId: actor.trustId,
-      callerId: caller.id,
       entitySlug: entity.slug,
-      tenantId: entity.tenantId,
       capability,
+      privacyClass,
       providerId: deps.provider.name,
       startedAt,
       latencyMs: 0,
       success: false,
       status: error,
       errorClass: routed.decision.error,
-    });
-    await deps.store.recordUsage(usageRow);
-    await writeReceipt(deps.store, buildRequestReceipt({
-      receiptId,
-      requestId,
-      correlationId,
-      actorTrustId: actor.trustId,
-      callerId: caller.id,
-      entitySlug: entity.slug,
-      tenantId: entity.tenantId,
       operation: mode,
-      sourcesAccessed: sources,
-      provider: deps.provider.name,
-      capability,
+      sources,
       routeExplanation: routed.decision.explanation,
       resultStatus: sourceUnavailable ? "source_unavailable" : error,
-      usageId,
-    }));
+    });
     return {
       ok: false,
       service: "digi-ai",
       error,
       message: routed.decision.detail,
       provenance,
-      usage: snapshotFromRecord(usageRow),
+      usage: snapshotFromRecord(recorded.usage),
       execution: {
         requestId,
         correlationId,
@@ -199,53 +190,45 @@ export async function handleAsk(input: {
   });
 
   const nativeUsage = providerResult.ok ? nativeUsageFromTokens(providerResult.usage) : undefined;
-  const usageRow = buildUsageRecord({
+  const status = providerResult.ok
+    ? "completed"
+    : providerResult.error === "unavailable"
+      ? "provider_unavailable"
+      : "failed";
+  const recorded = await persistAsk({
+    deps,
+    actor,
+    caller,
     usageId,
+    receiptId,
     requestId,
     correlationId,
-    actorTrustId: actor.trustId,
-    callerId: caller.id,
     entitySlug: entity.slug,
-    tenantId: entity.tenantId,
     capability,
+    privacyClass,
     providerId: providerResult.provider,
     modelId: providerResult.ok ? providerResult.model : routed.decision.selected.modelId,
     startedAt,
     latencyMs: providerResult.latencyMs,
     success: providerResult.ok,
-    status: providerResult.ok ? "completed" : providerResult.error === "unavailable" ? "provider_unavailable" : "failed",
+    status,
     nativeUsage,
     providerRequestId: providerResult.ok ? providerResult.providerRequestId : undefined,
     errorClass: providerResult.ok ? undefined : providerResult.error,
+    operation: mode,
+    sources,
+    routeExplanation: routed.decision.explanation,
+    resultStatus: sourceUnavailable ? "source_unavailable" : status,
   });
-  await deps.store.recordUsage(usageRow);
 
   if (!providerResult.ok) {
-    const status = providerResult.error === "unavailable" ? "provider_unavailable" : "failed";
-    await writeReceipt(deps.store, buildRequestReceipt({
-      receiptId,
-      requestId,
-      correlationId,
-      actorTrustId: actor.trustId,
-      callerId: caller.id,
-      entitySlug: entity.slug,
-      tenantId: entity.tenantId,
-      operation: mode,
-      sourcesAccessed: sources,
-      provider: providerResult.provider,
-      model: routed.decision.selected.modelId,
-      capability,
-      routeExplanation: routed.decision.explanation,
-      resultStatus: sourceUnavailable ? "source_unavailable" : status,
-      usageId,
-    }));
     return {
       ok: false,
       service: "digi-ai",
       error: status,
       message: providerResult.detail,
       provenance,
-      usage: snapshotFromRecord(usageRow),
+      usage: snapshotFromRecord(recorded.usage),
       execution: {
         requestId,
         correlationId,
@@ -268,30 +251,13 @@ export async function handleAsk(input: {
   });
 
   const objectiveCandidate = proposeObjective(message, body.draft?.actionType);
-  await writeReceipt(deps.store, buildRequestReceipt({
-    receiptId,
-    requestId,
-    correlationId,
-    actorTrustId: actor.trustId,
-    callerId: caller.id,
-    entitySlug: entity.slug,
-    tenantId: entity.tenantId,
-    operation: mode,
-    sourcesAccessed: sources,
-    provider: providerResult.provider,
-    model: providerResult.model,
-    capability,
-    routeExplanation: routed.decision.explanation,
-    resultStatus: "completed",
-    usageId,
-  }));
 
   return {
     ok: true,
     service: "digi-ai",
     answer: providerResult.text,
     provenance,
-    usage: snapshotFromRecord(usageRow),
+    usage: snapshotFromRecord(recorded.usage),
     execution: {
       requestId,
       correlationId,
@@ -369,6 +335,86 @@ function appendNews(page: NewsPage, provenance: ProvenanceItem[], userParts: str
   userParts.push(wrapCanonicalData("diginews", body));
 }
 
-async function writeReceipt(store: DigiAiStore, row: RequestReceipt) {
-  await store.recordReceipt(row);
+async function persistAsk(input: {
+  deps: EngineDeps;
+  actor: ActorContext;
+  caller: CallerApplication;
+  usageId: string;
+  receiptId: string;
+  requestId: string;
+  correlationId: string;
+  entitySlug?: string;
+  capability: string;
+  privacyClass: string;
+  providerId: string;
+  modelId?: string;
+  startedAt?: string;
+  latencyMs: number;
+  success: boolean;
+  status: "completed" | "failed" | "provider_unavailable" | "unsupported_capability";
+  errorClass?: string;
+  nativeUsage?: NativeUsage;
+  providerRequestId?: string;
+  operation: string;
+  sources: string[];
+  routeExplanation?: string;
+  resultStatus: "completed" | "failed" | "unauthorized" | "provider_unavailable" | "source_unavailable" | "unsupported_capability";
+}) {
+  const ledger = buildLedgerEntry({
+    receiptId: input.receiptId,
+    requestId: input.requestId,
+    actor: input.actor,
+    caller: input.caller,
+    entitySlug: input.entitySlug,
+    capability: input.capability,
+    providerId: input.providerId,
+    modelId: input.modelId,
+    privacyClass: input.privacyClass,
+    startedAt: input.startedAt,
+    status: input.status,
+    errorClass: input.errorClass,
+    nativeUsage: input.nativeUsage,
+    routeExplanation: input.routeExplanation,
+    providerRequestId: input.providerRequestId,
+  });
+  const usage = buildUsageRecord({
+    usageId: input.usageId,
+    requestId: input.requestId,
+    correlationId: input.correlationId,
+    actorTrustId: input.actor.trustId,
+    callerId: input.caller.id,
+    entitySlug: input.entitySlug,
+    tenantId: ledger.tenantId,
+    receiptId: input.receiptId,
+    capability: input.capability,
+    privacyClass: input.privacyClass,
+    providerId: input.providerId,
+    modelId: input.modelId,
+    startedAt: input.startedAt,
+    latencyMs: input.latencyMs,
+    success: input.success,
+    status: input.status,
+    nativeUsage: input.nativeUsage,
+    providerRequestId: input.providerRequestId,
+    errorClass: input.errorClass,
+  });
+  const receipt = buildRequestReceipt({
+    receiptId: input.receiptId,
+    requestId: input.requestId,
+    correlationId: input.correlationId,
+    actorTrustId: input.actor.trustId,
+    callerId: input.caller.id,
+    entitySlug: input.entitySlug,
+    tenantId: ledger.tenantId,
+    operation: input.operation,
+    sourcesAccessed: input.sources,
+    provider: input.providerId,
+    model: input.modelId,
+    capability: input.capability,
+    routeExplanation: input.routeExplanation,
+    resultStatus: input.resultStatus,
+    usageId: input.usageId,
+  });
+  await persistExecution(input.deps.store, { ledger, usage, receipt });
+  return { usage, ledger, receipt };
 }

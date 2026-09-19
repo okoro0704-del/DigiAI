@@ -16,6 +16,8 @@ export type UsageSnapshot = {
   nativeUsage?: NativeUsage;
   estimatedProviderCost?: number | null;
   actualProviderCost?: number | null;
+  pricingVersion?: string | null;
+  currency?: string | null;
   digiAiUnits: null;
   latencyMs: number;
   success: boolean;
@@ -72,6 +74,21 @@ export type DigiAiAskFailure = {
 
 export type DigiAiAskResponse = DigiAiAskSuccess | DigiAiAskFailure;
 
+export type EconomicHealth = {
+  usageLedger: {
+    durable: boolean;
+    writable: boolean;
+    backend: "memory" | "postgres" | "file";
+  };
+  pricingCatalog: {
+    loaded: boolean;
+    activeVersions: number;
+  };
+  costAccounting: {
+    enabled: boolean;
+  };
+};
+
 export type HealthResponse = {
   ok: true;
   service: "digi-ai";
@@ -79,4 +96,7 @@ export type HealthResponse = {
   provider: "configured" | "unbound";
   providers: Record<string, ProviderHealthRow>;
   capabilities: Record<string, CapabilityHealth>;
+  usageLedger: EconomicHealth["usageLedger"];
+  pricingCatalog: EconomicHealth["pricingCatalog"];
+  costAccounting: EconomicHealth["costAccounting"];
 };

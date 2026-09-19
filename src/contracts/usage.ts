@@ -3,9 +3,12 @@ export type NativeUsage = {
   outputTokens?: number;
   totalTokens?: number;
   cachedTokens?: number;
+  cachedInputTokens?: number;
   imageCount?: number;
+  imageSize?: number;
   audioSeconds?: number;
   videoSeconds?: number;
+  generatedSeconds?: number;
   [key: string]: number | undefined;
 };
 
@@ -18,7 +21,9 @@ export type UsageRecord = {
   entitySlug?: string;
   tenantId?: string;
   applicationId?: string;
+  receiptId?: string;
   capability?: string;
+  privacyClass?: string;
   provider: string;
   providerId?: string;
   model?: string;
@@ -28,6 +33,8 @@ export type UsageRecord = {
   totalTokens?: number;
   nativeUsage?: NativeUsage;
   providerRequestId?: string;
+  pricingVersion?: string | null;
+  currency?: string | null;
   estimatedProviderCost?: number | null;
   actualProviderCost?: number | null;
   /** Phase 2A is unpriced. Never a fake credit balance. */

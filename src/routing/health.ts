@@ -5,10 +5,16 @@ import { defaultPrivacyClass } from "../contracts/privacy.js";
 import { getCapability } from "../capabilities/catalog.js";
 import type { IntelligenceProvider } from "../providers/types.js";
 import { providerHealth } from "../providers/router.js";
+import type { DigiAiStore } from "../store/types.js";
+import { activePricingVersions } from "../usage/pricing-catalog.js";
 import { decideRoute } from "./policy.js";
 import { buildRuntimeRegistry } from "./runtime.js";
 
-export function buildHealthResponse(config: AppConfig, provider: IntelligenceProvider): HealthResponse {
+export function buildHealthResponse(
+  config: AppConfig,
+  provider: IntelligenceProvider,
+  store?: DigiAiStore,
+): HealthResponse {
   const registry = buildRuntimeRegistry(config, provider);
   const privacy = defaultPrivacyClass();
   const providers: Record<string, ProviderHealthRow> = {};
@@ -48,6 +54,7 @@ export function buildHealthResponse(config: AppConfig, provider: IntelligencePro
     };
   }
 
+  const ledger = store?.ledgerStatus() ?? { durable: false, writable: false, backend: "memory" as const };
   return {
     ok: true,
     service: "digi-ai",
@@ -55,5 +62,17 @@ export function buildHealthResponse(config: AppConfig, provider: IntelligencePro
     provider: providerHealth(provider),
     providers,
     capabilities,
+    usageLedger: {
+      durable: ledger.durable,
+      writable: ledger.writable,
+      backend: ledger.backend,
+    },
+    pricingCatalog: {
+      loaded: true,
+      activeVersions: activePricingVersions().length,
+    },
+    costAccounting: {
+      enabled: true,
+    },
   };
 }

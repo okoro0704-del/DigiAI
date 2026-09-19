@@ -17,6 +17,8 @@ import { defaultPrivacyClass } from "../contracts/privacy.js";
 import { providerStateFromError } from "../providers/errors.js";
 import type { ProviderFailure } from "../providers/types.js";
 import { routeCapability } from "../routing/runtime.js";
+import { buildLedgerEntry } from "../usage/ledger.js";
+import { persistExecution } from "../usage/persist.js";
 import { buildRequestReceipt, buildUsageRecord, nativeUsageFromTokens, snapshotFromRecord } from "../usage/receipt.js";
 import type { EngineDeps } from "./engine.js";
 
@@ -260,6 +262,24 @@ export async function handleTwinBrief(input: {
 
   const usageId = newId("use");
   const receiptId = newId("rcpt");
+  const twinStatus = usageSuccess ? "completed" : finishState === "provider_unavailable" ? "provider_unavailable" : "failed";
+  const ledger = buildLedgerEntry({
+    receiptId,
+    requestId,
+    actor,
+    caller,
+    entitySlug: authorizedSlug,
+    capability,
+    providerId: deps.provider.name,
+    modelId: model,
+    privacyClass: defaultPrivacyClass(),
+    startedAt: generatedAt,
+    completedAt: generatedAt,
+    status: twinStatus,
+    errorClass,
+    nativeUsage: nativeUsageFromTokens(tokens),
+    routeExplanation,
+  });
   const usageRow = buildUsageRecord({
     usageId,
     requestId,
@@ -267,36 +287,41 @@ export async function handleTwinBrief(input: {
     actorTrustId: actor.trustId,
     callerId: caller.id,
     entitySlug: authorizedSlug,
-    tenantId: body.entity?.tenantId,
+    tenantId: ledger.tenantId,
+    receiptId,
     capability,
+    privacyClass: defaultPrivacyClass(),
     providerId: deps.provider.name,
     modelId: model,
     startedAt: generatedAt,
     completedAt: generatedAt,
     latencyMs,
     success: usageSuccess,
-    status: usageSuccess ? "completed" : finishState === "provider_unavailable" ? "provider_unavailable" : "failed",
+    status: twinStatus,
     nativeUsage: nativeUsageFromTokens(tokens),
     errorClass,
   });
-  await deps.store.recordUsage(usageRow);
-  await deps.store.recordReceipt(buildRequestReceipt({
-    receiptId,
-    requestId,
-    correlationId,
-    actorTrustId: actor.trustId,
-    callerId: caller.id,
-    entitySlug: authorizedSlug,
-    tenantId: body.entity?.tenantId,
-    operation: "twin.brief",
-    sourcesAccessed: sourcesUsed,
-    provider: deps.provider.name,
-    model,
-    capability,
-    routeExplanation,
-    resultStatus: finishState === "completed" ? "completed" : finishState,
-    usageId,
-  }));
+  await persistExecution(deps.store, {
+    ledger,
+    usage: usageRow,
+    receipt: buildRequestReceipt({
+      receiptId,
+      requestId,
+      correlationId,
+      actorTrustId: actor.trustId,
+      callerId: caller.id,
+      entitySlug: authorizedSlug,
+      tenantId: ledger.tenantId,
+      operation: "twin.brief",
+      sourcesAccessed: sourcesUsed,
+      provider: deps.provider.name,
+      model,
+      capability,
+      routeExplanation,
+      resultStatus: finishState === "completed" ? "completed" : finishState,
+      usageId,
+    }),
+  });
 
   return {
     ok: true,
