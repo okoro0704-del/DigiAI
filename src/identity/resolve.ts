@@ -82,6 +82,7 @@ function mapTrustId(raw: Record<string, unknown>): ActorContext | null {
     trustTier: Number(trustLevel?.tier ?? raw.trustTier ?? 0) || undefined,
     verified: typeof raw.isVerifiedIdentity === "boolean" ? raw.isVerifiedIdentity : undefined,
     displayName: typeof raw.displayName === "string" ? raw.displayName : undefined,
+    tenantId: typeof raw.tid === "string" ? raw.tid : typeof raw.tenantId === "string" ? raw.tenantId : undefined,
   };
 }
 

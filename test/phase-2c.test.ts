@@ -40,6 +40,7 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     enabledProviders: [],
     disabledModels: [],
     cloudMaxPrivacy: "PRIVATE",
+    sovereignDriveUrl: "",
     ...overrides,
   };
 }

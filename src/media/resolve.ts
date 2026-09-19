@@ -26,6 +26,7 @@ export async function resolveImageInputs(input: {
   actorTrustId: string;
   callerId: string;
   tenantId?: string;
+  accessToken?: string;
 }): Promise<ResolvedImage[]> {
   const resolved: ResolvedImage[] = [];
   for (const image of input.images) {
@@ -73,31 +74,29 @@ function resolveInlineImage(image: ImageInputReference, config: AppConfig): Reso
 async function resolveDriveImage(
   image: ImageInputReference,
   input: {
+    config: AppConfig;
     drive: SovereignDrive;
     actorTrustId: string;
     callerId: string;
     tenantId?: string;
+    accessToken?: string;
   },
 ): Promise<ResolvedImage> {
   const assetId = image.assetId?.trim();
   if (!assetId) throw new DigiAiError(400, "invalid_media", "A Sovereign Drive assetId is required.");
-  const auth = await input.drive.authorizeRead({
+  const ctx = {
     actorTrustId: input.actorTrustId,
     callerId: input.callerId,
     tenantId: input.tenantId,
+    accessToken: input.accessToken,
     assetId,
-  });
-  if (!auth.ok) {
-    throw new DigiAiError(403, "media_access_denied", auth.detail);
-  }
-  const read = await input.drive.readAsset({
-    actorTrustId: input.actorTrustId,
-    callerId: input.callerId,
-    tenantId: input.tenantId,
-    assetId,
-  });
-  if (!read.ok) {
-    throw new DigiAiError(read.error === "media_access_denied" ? 403 : 502, read.error === "unavailable" ? "provider_unavailable" : read.error, read.detail);
+  };
+  const auth = await input.drive.authorizeRead(ctx);
+  if (!auth.ok) throw driveError(auth.error, auth.detail);
+  const read = await input.drive.readAsset(ctx);
+  if (!read.ok) throw driveError(read.error, read.detail);
+  if (read.bytes.length > input.config.maxImageBytes) {
+    throw new DigiAiError(400, "media_too_large", "Drive asset exceeds Digi AI media size limit.");
   }
   return {
     sourceType: "sovereign_drive",
@@ -187,6 +186,15 @@ export function imageDataBlock(images: ResolvedImage[]): string {
     "Do not identify faces, match identities, or infer sensitive traits.",
     ...lines,
   ].join("\n");
+}
+
+function driveError(error: string, detail: string) {
+  if (error === "drive_auth_failed") return new DigiAiError(401, "drive_auth_failed", detail);
+  if (error === "drive_access_denied" || error === "media_access_denied") return new DigiAiError(403, "media_access_denied", detail);
+  if (error === "drive_asset_not_found" || error === "not_found") return new DigiAiError(404, "not_found", detail);
+  if (error === "drive_invalid_media") return new DigiAiError(400, "invalid_media", detail);
+  if (error === "drive_quota") return new DigiAiError(400, "media_too_large", detail);
+  return new DigiAiError(502, error === "unavailable" ? "provider_unavailable" : error, detail);
 }
 
 export function clearResolvedImages(images: ResolvedImage[]) {

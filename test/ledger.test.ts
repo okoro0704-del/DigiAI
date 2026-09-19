@@ -26,6 +26,7 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     trustIdApi: "http://trustid.test",
     allowAttestedActor: false,
     databaseUrl: "",
+    sovereignDriveUrl: "",
     ...overrides,
   };
 }

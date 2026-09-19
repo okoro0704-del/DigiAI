@@ -106,6 +106,17 @@ export type HealthResponse = {
   pricingCatalog: EconomicHealth["pricingCatalog"];
   costAccounting: EconomicHealth["costAccounting"];
   media: {
+    canonicalRead: {
+      configured: boolean;
+      runtimeVerified: boolean;
+    };
+    canonicalWrite: {
+      configured: boolean;
+      runtimeVerified: boolean;
+    };
+    persistence: {
+      status: "available" | "partial" | "unavailable";
+    };
     canonicalPersistence: {
       available: boolean;
       status: "available" | "unavailable";

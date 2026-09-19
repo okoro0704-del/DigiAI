@@ -73,6 +73,7 @@ export type RequestReceipt = {
     answer?: string;
     media?: unknown;
     finishState?: string;
+    canonicalAssetReference?: string;
   };
   createdAt: string;
 };

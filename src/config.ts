@@ -96,6 +96,14 @@ export function loadConfig() {
     maxImageBytes: Number(env("MAX_IMAGE_BYTES", "4000000")),
     maxImageOutputs: Number(env("MAX_IMAGE_OUTPUTS", "4")),
     maxTransientBytes: Number(env("MAX_TRANSIENT_BYTES", "8000000")),
+    sovereignDriveUrl: (
+      env("SOVEREIGN_DRIVE_URL") || env("DATAZONE_BASE_URL")
+    ).replace(/\/$/, ""),
+    sovereignDriveJwtSecret: env("SOVEREIGN_DRIVE_JWT_SECRET") || env("TRUST_ID_JWT_SECRET"),
+    sovereignDriveJwtIssuer: env("SOVEREIGN_DRIVE_JWT_ISSUER") || env("TRUST_ID_ISSUER") || env("TRUSTID_API") || "https://trust-id.local",
+    sovereignDriveJwtAudience: env("SOVEREIGN_DRIVE_JWT_AUDIENCE", "sovereign-drive"),
+    sovereignDriveAcceptanceTenant: env("SOVEREIGN_DRIVE_ACCEPTANCE_TENANT", "digi-ai-acceptance"),
+    sovereignDriveTimeoutMs: Number(env("SOVEREIGN_DRIVE_TIMEOUT_MS", "45000")),
     newsLimit: Number(env("DIGINEWS_LIMIT", "8")),
   };
 }

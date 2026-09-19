@@ -4,7 +4,10 @@ import { isCapabilityId } from "./contracts/capabilities.js";
 import { isPrivacyClass } from "./contracts/privacy.js";
 import { CONTEXT_SOURCES, isContextSourceId, isDigiAiMode, type AskConstraints, type DigiAiAskInput } from "./contracts/request.js";
 import { isImageOperation, isImageSourceType, isSizeClass, type ImageInputReference } from "./contracts/media.js";
-import { UnboundDrive, type SovereignDrive } from "./media/drive.js";
+import { persistDriveAcceptanceFixture } from "./media/acceptance.js";
+import { authenticateCaller } from "./identity/resolve.js";
+import { createDrive } from "./media/factory.js";
+import type { SovereignDrive } from "./media/drive.js";
 import type { HealthResponse } from "./contracts/response.js";
 import { buildHealthResponse } from "./routing/health.js";
 import type { TwinBriefInput, TwinOwnerActivity } from "./contracts/twin.js";
@@ -188,7 +191,7 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
     digipedia: options.digipedia ?? new HttpDigiPediaReader(config),
     diginews: options.diginews ?? new HttpDigiNewsReader(config),
     store,
-    drive: options.drive ?? new UnboundDrive(),
+    drive: options.drive ?? createDrive(config),
   };
   const resolver = options.resolver ?? createTrustIdResolver(config);
 
@@ -288,6 +291,7 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         caller: identity.caller,
         body,
         requestId,
+        accessToken: readAccessToken(req.headers),
       });
       const status = result.ok
         ? 200
@@ -355,6 +359,29 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
     }
   });
 
+  app.post("/internal/media/drive-acceptance", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const caller = authenticateCaller(config, req.headers);
+      if (!caller) throw new DigiAiError(401, "unauthenticated_caller", "Caller identity is required.");
+      if (config.isProd && !isOperatorCaller(config, caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for Drive bridge acceptance.");
+      }
+      const result = await persistDriveAcceptanceFixture({
+        drive: deps.drive,
+        actorTrustId: caller.id,
+        callerId: caller.id,
+        tenantId: config.sovereignDriveAcceptanceTenant,
+      });
+      return reply.code(result.ok ? 200 : 502).send({
+        service: "digi-ai",
+        note: "DRIVE BRIDGE ACCEPTANCE. Not real AI image generation.",
+        ...result,
+      });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
   const rejectWrite = async (_req: FastifyRequest, reply: FastifyReply) =>
     reply.code(405).send({ ok: false, service: "digi-ai", error: "method_not_allowed", message: "Not allowed." });
   for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
@@ -385,4 +412,11 @@ function sanitizeLedger(row: import("./contracts/ledger.js").LedgerEntry) {
     ...row,
     digiAiUnits: null,
   };
+}
+
+function readAccessToken(headers: FastifyRequest["headers"]): string | undefined {
+  const auth = headers.authorization;
+  const value = Array.isArray(auth) ? auth[0] : auth;
+  if (value && value.toLowerCase().startsWith("bearer ")) return value.slice(7).trim();
+  return undefined;
 }

@@ -24,6 +24,7 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     maxMessageChars: 8000,
     maxSuppliedChars: 12000,
     newsLimit: 8,
+    sovereignDriveUrl: "",
     ...overrides,
   };
 }

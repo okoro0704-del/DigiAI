@@ -38,6 +38,8 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     maxImageBytes: 4_000_000,
     maxImageOutputs: 4,
     maxTransientBytes: 8_000_000,
+    sovereignDriveUrl: "",
+    sovereignDriveJwtSecret: "",
     ...overrides,
   };
 }

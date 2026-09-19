@@ -13,13 +13,15 @@ import { DigiAiError } from "../lib/http.js";
 import { requireSlug } from "../lib/slug.js";
 import { SYSTEM_POLICY, wrapCanonicalData } from "../lib/policy.js";
 import { UnboundDrive, type SovereignDrive } from "../media/drive.js";
+import { peekJwtTenant } from "../media/jwt.js";
 import { assertImageInputLimits, mapSizeClass, parseImageConstraints } from "../media/limits.js";
-import { normalizeGeneratedMedia } from "../media/normalize.js";
+import { normalizeGeneratedMedia, persistHeldGeneratedMedia } from "../media/normalize.js";
 import { clearResolvedImages, imageDataBlock, resolveImageInputs } from "../media/resolve.js";
 import { ProviderPool } from "../providers/pool.js";
 import type { IntelligenceProvider } from "../providers/types.js";
 import { executeWithFailover } from "../routing/execute.js";
 import { resolveRequestedCapability } from "../routing/resolve-capability.js";
+import { routeCapability } from "../routing/runtime.js";
 import { buildLedgerEntry, usageFromLedger } from "../usage/ledger.js";
 import { persistExecution } from "../usage/persist.js";
 import { buildRequestReceipt, buildUsageRecord, nativeUsageFromTokens, snapshotFromRecord } from "../usage/receipt.js";
@@ -43,8 +45,10 @@ export async function handleAsk(input: {
   caller: CallerApplication;
   body: DigiAiAskInput;
   requestId: string;
+  accessToken?: string;
 }): Promise<DigiAiAskResponse> {
   const { deps, actor, caller, body, requestId } = input;
+  const accessToken = input.accessToken;
   const correlationId = body.correlationId?.trim() || requestId;
   const message = (body.message ?? "").trim();
   if (!message) throw new DigiAiError(400, "invalid_request", "A request message is required.");
@@ -148,25 +152,8 @@ export async function handleAsk(input: {
   userParts.push("If canonical data is present, ground generated text in it and say when you are interpreting.");
 
   const startedAt = nowIso();
-  if (body.idempotencyKey) {
-    const replayed = await replayIdempotent(deps, caller.id, body.idempotencyKey);
-    if (replayed) return replayed;
-  }
   const drive = deps.drive ?? new UnboundDrive();
-  const resolvedImages = images.length
-    ? await resolveImageInputs({
-        images,
-        config: deps.config,
-        drive,
-        actorTrustId: actor.trustId,
-        callerId: caller.id,
-        tenantId: entity.slug,
-      })
-    : [];
-  if (resolvedImages.length) {
-    userParts.push(wrapCanonicalData("image-metadata", imageDataBlock(resolvedImages)));
-  }
-
+  const tenantId = actor.tenantId ?? peekJwtTenant(accessToken) ?? (deps.config.isProd ? undefined : entity.slug);
   const pool = deps.pool ?? new ProviderPool({ [deps.provider.name]: deps.provider });
   const allowFailover = capability !== "IMAGE" && body.constraints?.allowFailover !== false && deps.config.allowFailover;
   const forceProvider =
@@ -174,6 +161,90 @@ export async function handleAsk(input: {
     body.constraints?.forceProvider
       ? body.constraints.forceProvider
       : undefined;
+
+  if (body.idempotencyKey) {
+    const replayed = await replayIdempotent({
+      deps,
+      callerId: caller.id,
+      idempotencyKey: body.idempotencyKey,
+      persistCanonical: body.constraints?.persistCanonical === true,
+      actorTrustId: actor.trustId,
+      tenantId,
+      accessToken,
+      drive,
+    });
+    if (replayed) return replayed;
+  }
+
+  const privacyRoute = routeCapability({
+    config: deps.config,
+    pool,
+    capability,
+    privacyClass,
+    forceProvider,
+  });
+  if (!privacyRoute.decision.ok) {
+    const error = privacyRoute.decision.error === "unsupported_capability" ? "unsupported_capability" : "provider_unavailable";
+    const receiptId = newId("rcpt");
+    const recorded = await persistAsk({
+      deps,
+      actor,
+      caller,
+      usageId: newId("use"),
+      receiptId,
+      requestId,
+      attemptIndex: 1,
+      correlationId,
+      entitySlug: entity.slug,
+      capability,
+      privacyClass,
+      providerId: deps.provider.name,
+      startedAt,
+      latencyMs: 0,
+      success: false,
+      status: error,
+      errorClass: privacyRoute.decision.error,
+      operation: operation ?? mode,
+      sources,
+      routeExplanation: privacyRoute.decision.explanation,
+      resultStatus: sourceUnavailable ? "source_unavailable" : error,
+      idempotencyKey: body.idempotencyKey,
+    });
+    return {
+      ok: false,
+      service: "digi-ai",
+      error,
+      message: privacyRoute.decision.detail,
+      provenance,
+      usage: snapshotFromRecord(recorded.usage),
+      execution: {
+        requestId,
+        correlationId,
+        provider: deps.provider.name,
+        capability,
+        latencyMs: 0,
+        sourcesUsed: sources,
+        finishState: sourceUnavailable ? "source_unavailable" : error,
+      },
+      receiptId,
+    };
+  }
+
+  const resolvedImages = images.length
+    ? await resolveImageInputs({
+        images,
+        config: deps.config,
+        drive,
+        actorTrustId: actor.trustId,
+        callerId: caller.id,
+        tenantId,
+        accessToken,
+      })
+    : [];
+  if (resolvedImages.length) {
+    userParts.push(wrapCanonicalData("image-metadata", imageDataBlock(resolvedImages)));
+  }
+
   const executed = await executeWithFailover({
     config: deps.config,
     pool,
@@ -262,7 +333,10 @@ export async function handleAsk(input: {
       sourceAssetIds: resolvedImages.map((image) => image.assetId).filter((id): id is string => Boolean(id)),
       persistCanonical: body.constraints?.persistCanonical === true,
       drive,
-      tenantId: entity.slug,
+      tenantId,
+      accessToken,
+      executionRef: requestId,
+      idempotencyKey: body.idempotencyKey,
       maxTransientBytes: deps.config.maxTransientBytes,
     });
   }
@@ -305,7 +379,12 @@ export async function handleAsk(input: {
       resultStatus: sourceUnavailable ? "source_unavailable" : status,
       idempotencyKey: body.idempotencyKey,
       resultSnapshot: attempt.result.ok
-        ? { answer: attempt.result.text, media: sanitizeMediaForLedger(media), finishState: "completed" }
+        ? {
+            answer: attempt.result.text,
+            media: sanitizeMediaForLedger(media),
+            finishState: "completed",
+            canonicalAssetReference: media?.find((row) => row.canonicalAssetReference)?.canonicalAssetReference,
+          }
         : undefined,
     });
   }
@@ -480,7 +559,7 @@ async function persistAsk(input: {
   routeExplanation?: string;
   resultStatus: "completed" | "failed" | "unauthorized" | "provider_unavailable" | "source_unavailable" | "unsupported_capability";
   idempotencyKey?: string;
-  resultSnapshot?: { answer?: string; media?: unknown; finishState?: string };
+  resultSnapshot?: { answer?: string; media?: unknown; finishState?: string; canonicalAssetReference?: string };
 }) {
   const ledger = buildLedgerEntry({
     receiptId: input.receiptId,
@@ -555,16 +634,57 @@ function resolveOperation(capability: string, requested?: ImageOperation): Image
   return requested;
 }
 
-async function replayIdempotent(
-  deps: EngineDeps,
-  callerId: string,
-  idempotencyKey: string,
-): Promise<DigiAiAskResponse | null> {
-  const existing = await deps.store.findReceiptByIdempotency?.(callerId, idempotencyKey);
+async function replayIdempotent(input: {
+  deps: EngineDeps;
+  callerId: string;
+  idempotencyKey: string;
+  persistCanonical: boolean;
+  actorTrustId: string;
+  tenantId?: string;
+  accessToken?: string;
+  drive: SovereignDrive;
+}): Promise<DigiAiAskResponse | null> {
+  const existing = await input.deps.store.findReceiptByIdempotency?.(input.callerId, input.idempotencyKey);
   if (!existing || existing.resultStatus !== "completed" || !existing.resultSnapshot) return null;
-  const ledger = await deps.store.getLedgerByReceiptId(existing.receiptId);
+  let media = Array.isArray(existing.resultSnapshot.media)
+    ? (existing.resultSnapshot.media as GeneratedMediaResult[])
+    : undefined;
+  if (input.persistCanonical && media?.some((row) => row.persistenceState !== "canonical")) {
+    const retried = await persistHeldGeneratedMedia({
+      drive: input.drive,
+      callerId: input.callerId,
+      idempotencyKey: input.idempotencyKey,
+      actorTrustId: input.actorTrustId,
+      tenantId: input.tenantId,
+      accessToken: input.accessToken,
+      providerId: existing.provider,
+      modelId: existing.model,
+      sourceAssetIds: media.flatMap((row) => row.provenance.sourceAssetIds),
+      executionRef: existing.requestId,
+    });
+    media = media.map((row) =>
+      retried.persistenceState === "canonical" && retried.canonicalAssetReference
+        ? {
+            ...row,
+            persistenceState: "canonical",
+            canonicalAssetReference: retried.canonicalAssetReference,
+            contentBase64: undefined,
+            transientReference: undefined,
+            provenance: { ...row.provenance, canonicalAssetId: retried.canonicalAssetReference },
+          }
+        : row,
+    );
+    const snapshot = {
+      ...existing.resultSnapshot,
+      media: sanitizeMediaForLedger(media),
+      canonicalAssetReference: retried.canonicalAssetReference,
+    };
+    existing.resultSnapshot = snapshot;
+    await input.deps.store.updateReceiptSnapshot?.(existing.receiptId, snapshot);
+  }
+  const ledger = await input.deps.store.getLedgerByReceiptId(existing.receiptId);
   const usage = ledger
-    ? snapshotFromRecord(usageFromLedger(ledger, { usageId: existing.usageId, callerId, correlationId: existing.correlationId }))
+    ? snapshotFromRecord(usageFromLedger(ledger, { usageId: existing.usageId, callerId: input.callerId, correlationId: existing.correlationId }))
     : {
         usageId: existing.usageId ?? existing.receiptId,
         provider: existing.provider ?? "unknown",
@@ -590,6 +710,6 @@ async function replayIdempotent(
       finishState: "completed",
     },
     receiptId: existing.receiptId,
-    media: Array.isArray(existing.resultSnapshot.media) ? existing.resultSnapshot.media as GeneratedMediaResult[] : undefined,
+    media,
   };
 }

@@ -7,7 +7,7 @@ import type { IntelligenceProvider } from "../providers/types.js";
 import { ProviderPool } from "../providers/pool.js";
 import { providerHealth } from "../providers/router.js";
 import type { DigiAiStore } from "../store/types.js";
-import { UnboundDrive, type SovereignDrive } from "../media/drive.js";
+import { UnboundDrive, type DriveStatus, type SovereignDrive } from "../media/drive.js";
 import { activePricingVersions } from "../usage/pricing-catalog.js";
 import { decideRoute } from "./policy.js";
 import { asPool, buildRuntimeRegistry } from "./runtime.js";
@@ -84,11 +84,32 @@ export function buildHealthResponse(
     costAccounting: {
       enabled: true,
     },
-    media: {
-      canonicalPersistence: {
-        available: drive.status().write,
-        status: drive.status().write ? "available" : "unavailable",
-      },
+    media: mediaHealth(drive),
+  };
+}
+
+function mediaHealth(drive: SovereignDrive): HealthResponse["media"] {
+  const status: DriveStatus = drive.status();
+  const readConfigured = Boolean(status.configured ?? status.read);
+  const writeConfigured = Boolean(status.configured ?? status.write);
+  const readVerified = Boolean(status.runtimeReadVerified);
+  const writeVerified = Boolean(status.runtimeWriteVerified);
+  let persistence: "available" | "partial" | "unavailable" = "unavailable";
+  if (readConfigured && writeConfigured && readVerified && writeVerified) persistence = "available";
+  else if (readConfigured || writeConfigured) persistence = "partial";
+  return {
+    canonicalRead: {
+      configured: readConfigured,
+      runtimeVerified: readVerified,
+    },
+    canonicalWrite: {
+      configured: writeConfigured,
+      runtimeVerified: writeVerified,
+    },
+    persistence: { status: persistence },
+    canonicalPersistence: {
+      available: Boolean(status.write),
+      status: status.write ? "available" : "unavailable",
     },
   };
 }

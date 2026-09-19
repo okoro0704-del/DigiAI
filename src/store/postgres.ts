@@ -143,6 +143,18 @@ export class PostgresStore implements DigiAiStore {
     return result.rows[0] ? (result.rows[0].payload as RequestReceipt) : null;
   }
 
+  async updateReceiptSnapshot(receiptId: string, resultSnapshot: RequestReceipt["resultSnapshot"]) {
+    await this.ready();
+    const existing = await this.pool.query(`SELECT payload FROM request_receipts WHERE receipt_id = $1`, [receiptId]);
+    const current = existing.rows[0]?.payload as RequestReceipt | undefined;
+    if (!current) return;
+    current.resultSnapshot = resultSnapshot;
+    await this.pool.query(`UPDATE request_receipts SET payload = $2::jsonb WHERE receipt_id = $1`, [
+      receiptId,
+      JSON.stringify(current),
+    ]);
+  }
+
   async recordLedger(entry: LedgerEntry) {
     await this.ready();
     try {

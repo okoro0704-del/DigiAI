@@ -16,6 +16,7 @@ export type ActorContext = {
   trustTier?: number;
   verified?: boolean;
   displayName?: string;
+  tenantId?: string;
 };
 
 export type EntityContext = {

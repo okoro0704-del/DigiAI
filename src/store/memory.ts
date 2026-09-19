@@ -42,6 +42,11 @@ export class MemoryStore implements DigiAiStore {
     return this.receipts.find((row) => row.callerId === callerId && row.idempotencyKey === idempotencyKey) ?? null;
   }
 
+  async updateReceiptSnapshot(receiptId: string, resultSnapshot: RequestReceipt["resultSnapshot"]) {
+    const row = this.receipts.find((existing) => existing.receiptId === receiptId);
+    if (row) row.resultSnapshot = resultSnapshot;
+  }
+
   async recordLedger(entry: LedgerEntry) {
     if (!this.writable) throw new Error("usage_ledger_unavailable");
     const duplicate =

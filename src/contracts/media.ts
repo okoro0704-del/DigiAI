@@ -4,7 +4,7 @@ export type ImageSourceType = (typeof IMAGE_SOURCE_TYPES)[number];
 export const IMAGE_OPERATIONS = ["generate", "edit", "analyze"] as const;
 export type ImageOperation = (typeof IMAGE_OPERATIONS)[number];
 
-export const PERSISTENCE_STATES = ["transient", "canonical", "failed"] as const;
+export const PERSISTENCE_STATES = ["transient", "persisting", "canonical", "failed"] as const;
 export type PersistenceState = (typeof PERSISTENCE_STATES)[number];
 
 export const SIZE_CLASSES = ["square", "portrait", "landscape"] as const;
