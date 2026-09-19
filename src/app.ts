@@ -3,10 +3,11 @@ import type { AppConfig } from "./config.js";
 import { isCapabilityId } from "./contracts/capabilities.js";
 import { isPrivacyClass } from "./contracts/privacy.js";
 import { CONTEXT_SOURCES, isContextSourceId, isDigiAiMode, type AskConstraints, type DigiAiAskInput } from "./contracts/request.js";
-import { isAudioOutputFormat, isAudioSourceType, isImageOperation, isImageSourceType, isMusicOperation, isSizeClass, isSpeechOperation, type AudioInputReference, type ImageInputReference } from "./contracts/media.js";
+import { isAudioOutputFormat, isAudioSourceType, isImageOperation, isImageSourceType, isMusicOperation, isSizeClass, isSpeechOperation, isVideoOperation, type AudioInputReference, type ImageInputReference } from "./contracts/media.js";
 import { isMusicOutputFormat, isVocalMode } from "./contracts/music.js";
+import { isVideoAudioMode, isVideoQuality, isVideoResolution } from "./contracts/video.js";
 import { isSpeechTask } from "./contracts/speech.js";
-import { persistAudioAcceptanceFixture, persistDriveAcceptanceFixture, persistMusicAcceptanceFixture } from "./media/acceptance.js";
+import { persistAudioAcceptanceFixture, persistDriveAcceptanceFixture, persistMusicAcceptanceFixture, persistVideoAcceptanceFixture } from "./media/acceptance.js";
 import { authenticateCaller } from "./identity/resolve.js";
 import { createDrive } from "./media/factory.js";
 import type { SovereignDrive } from "./media/drive.js";
@@ -107,8 +108,11 @@ function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): Di
   const actor = body.actor && typeof body.actor === "object" ? (body.actor as DigiAiAskInput["actor"]) : undefined;
   const draft = body.draft && typeof body.draft === "object" ? (body.draft as DigiAiAskInput["draft"]) : undefined;
   const constraints = parseConstraints(body.constraints);
-  if (body.operation !== undefined && !isImageOperation(body.operation) && !isSpeechOperation(body.operation) && !isMusicOperation(body.operation)) {
+  if (body.operation !== undefined && !isImageOperation(body.operation) && !isSpeechOperation(body.operation) && !isMusicOperation(body.operation) && !isVideoOperation(body.operation)) {
     throw new DigiAiError(400, "invalid_request", "Unknown media operation.");
+  }
+  if (body.sourceVideo !== undefined || (body as Record<string, unknown>).videoToVideo !== undefined) {
+    throw new DigiAiError(400, "invalid_request", "Source-video editing is not supported.");
   }
   return {
     message: body.message,
@@ -121,7 +125,7 @@ function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): Di
     draft,
     correlationId: typeof body.correlationId === "string" ? body.correlationId : undefined,
     idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : undefined,
-    operation: isImageOperation(body.operation) || isSpeechOperation(body.operation) || isMusicOperation(body.operation) ? body.operation : undefined,
+    operation: isImageOperation(body.operation) || isSpeechOperation(body.operation) || isMusicOperation(body.operation) || isVideoOperation(body.operation) ? body.operation : undefined,
     images: parseImages(body.images ?? body.media),
     audio: parseAudio(body.audio),
     actor,
@@ -178,6 +182,9 @@ function parseConstraints(raw: unknown): AskConstraints | undefined {
     structure: typeof body.structure === "string" ? body.structure : undefined,
     lyrics: typeof body.lyrics === "string" ? body.lyrics : undefined,
     musicOutputFormat: isMusicOutputFormat(body.musicOutputFormat) ? body.musicOutputFormat : undefined,
+    resolution: isVideoResolution(body.resolution) ? body.resolution : undefined,
+    videoQuality: isVideoQuality(body.videoQuality) ? body.videoQuality : undefined,
+    audioMode: isVideoAudioMode(body.audioMode) ? body.audioMode : undefined,
   };
 }
 
@@ -470,6 +477,29 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         service: "digi-ai",
         ...result,
         note: "MUSIC DRIVE ACCEPTANCE. Safe fixture through Digi AI media persistence. Not real music generation.",
+      });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/media/video-acceptance", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const caller = authenticateCaller(config, req.headers);
+      if (!caller) throw new DigiAiError(401, "unauthenticated_caller", "Caller identity is required.");
+      if (config.isProd && !isOperatorCaller(config, caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for video Drive acceptance.");
+      }
+      const result = await persistVideoAcceptanceFixture({
+        drive: deps.drive,
+        actorTrustId: caller.id,
+        callerId: caller.id,
+        tenantId: config.sovereignDriveAcceptanceTenant,
+      });
+      return reply.code(result.ok ? 200 : 502).send({
+        service: "digi-ai",
+        ...result,
+        note: "VIDEO DRIVE ACCEPTANCE. Safe fixture through Digi AI media persistence. Not real video generation.",
       });
     } catch (err) {
       return sendError(reply, err);

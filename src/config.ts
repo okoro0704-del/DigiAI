@@ -79,6 +79,7 @@ export function loadConfig() {
       SPEECH_TO_TEXT: env("AI_DEFAULT_MODEL_STT", "whisper-1"),
       TEXT_TO_SPEECH: env("AI_DEFAULT_MODEL_TTS", "tts-1"),
       MUSIC: env("AI_DEFAULT_MODEL_MUSIC", "lyria-3-clip-preview"),
+      VIDEO: env("AI_DEFAULT_MODEL_VIDEO", "veo-3.1-lite-generate-preview"),
     } as Record<string, string>,
     cloudMaxPrivacy: (env("AI_CLOUD_MAX_PRIVACY", "PRIVATE").toUpperCase() || "PRIVATE") as
       | "PUBLIC"
@@ -107,6 +108,10 @@ export function loadConfig() {
     maxMusicOutputs: Number(env("MAX_MUSIC_OUTPUTS", "4")),
     maxMusicLyricsChars: Number(env("MAX_MUSIC_LYRICS_CHARS", "2000")),
     musicTimeoutMs: Number(env("MUSIC_TIMEOUT_MS", "120000")),
+    maxVideoSeconds: Number(env("MAX_VIDEO_SECONDS", "8")),
+    maxVideoOutputs: Number(env("MAX_VIDEO_OUTPUTS", "2")),
+    videoTimeoutMs: Number(env("VIDEO_TIMEOUT_MS", "180000")),
+    videoPollMs: Number(env("VIDEO_POLL_MS", "10000")),
     sovereignDriveUrl: (
       env("SOVEREIGN_DRIVE_URL") || env("DATAZONE_BASE_URL")
     ).replace(/\/$/, ""),

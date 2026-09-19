@@ -43,7 +43,9 @@ export const SPEECH_OPERATIONS = ["transcribe", "translate", "speak", "converse"
 export type SpeechOperation = (typeof SPEECH_OPERATIONS)[number];
 export const MUSIC_OPERATIONS = ["compose"] as const;
 export type MusicOperation = (typeof MUSIC_OPERATIONS)[number];
-export type MediaOperation = ImageOperation | SpeechOperation | MusicOperation;
+export const VIDEO_OPERATIONS = ["generate", "image_to_video"] as const;
+export type VideoOperation = (typeof VIDEO_OPERATIONS)[number];
+export type MediaOperation = ImageOperation | SpeechOperation | MusicOperation | VideoOperation;
 
 export const AUDIO_OUTPUT_FORMATS = ["mp3", "wav", "opus", "aac"] as const;
 export type AudioOutputFormat = (typeof AUDIO_OUTPUT_FORMATS)[number];
@@ -65,7 +67,7 @@ export type AudioInputReference = {
 
 export type MediaProvenance = {
   generated: boolean;
-  capability: "IMAGE" | "VISION" | "SPEECH_TO_TEXT" | "TEXT_TO_SPEECH" | "VOICE" | "MUSIC";
+  capability: "IMAGE" | "VISION" | "SPEECH_TO_TEXT" | "TEXT_TO_SPEECH" | "VOICE" | "MUSIC" | "VIDEO";
   operation: MediaOperation;
   providerId: string;
   modelId?: string;
@@ -80,7 +82,7 @@ export type MediaProvenance = {
 
 export type GeneratedMediaResult = {
   mediaId: string;
-  capability: "IMAGE" | "TEXT_TO_SPEECH" | "VOICE" | "MUSIC";
+  capability: "IMAGE" | "TEXT_TO_SPEECH" | "VOICE" | "MUSIC" | "VIDEO";
   operation: MediaOperation;
   provider: string;
   model?: string;
@@ -89,6 +91,8 @@ export type GeneratedMediaResult = {
   height?: number;
   durationSeconds?: number;
   requestedDurationSeconds?: number;
+  frameRate?: number;
+  audioPresent?: boolean;
   sampleRate?: number;
   channels?: number;
   byteSize?: number;
@@ -131,6 +135,10 @@ export function isSpeechOperation(value: unknown): value is SpeechOperation {
 
 export function isMusicOperation(value: unknown): value is MusicOperation {
   return typeof value === "string" && (MUSIC_OPERATIONS as readonly string[]).includes(value);
+}
+
+export function isVideoOperation(value: unknown): value is VideoOperation {
+  return typeof value === "string" && (VIDEO_OPERATIONS as readonly string[]).includes(value);
 }
 
 export function isAudioOutputFormat(value: unknown): value is AudioOutputFormat {

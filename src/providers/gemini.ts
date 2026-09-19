@@ -29,6 +29,7 @@ export class GeminiProvider implements IntelligenceProvider {
 
   async invoke(request: ProviderInvokeRequest): Promise<ProviderResult> {
     if (request.capability === "MUSIC") return this.compose(request);
+    if (request.capability === "VIDEO") return this.generateVideo(request);
     const started = Date.now();
     const model = (request.model ?? this.model).replace(/^models\//, "");
     const controller = new AbortController();
@@ -188,6 +189,190 @@ export class GeminiProvider implements IntelligenceProvider {
       clearTimeout(timer);
     }
   }
+
+  private async generateVideo(request: ProviderInvokeRequest): Promise<ProviderResult> {
+    const started = Date.now();
+    const model = (request.model ?? "veo-3.1-lite-generate-preview").replace(/^models\//, "");
+    const prompt = request.messages.filter((row) => row.role === "user").map((row) => row.content).join("\n\n").trim();
+    if (!prompt && !request.providerOperationId) {
+      return { ok: false, provider: this.name, model, error: "invalid_video_request", detail: "VIDEO requires a creative brief.", latencyMs: 0 };
+    }
+    const timeoutMs = Math.max(this.timeoutMs, request.timeoutMs ?? 180_000);
+    const pollMs = Math.max(1, request.pollIntervalMs ?? 10_000);
+    let operationName = request.providerOperationId?.replace(/^\/+/, "");
+    try {
+      if (!operationName) {
+        const submitted = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:predictLongRunning`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey },
+          body: JSON.stringify(buildVeoPredictBody(request, prompt)),
+        });
+        const raw = (await submitted.json().catch(() => null)) as VeoOperationResponse | null;
+        if (!submitted.ok) {
+          return { ok: false, provider: this.name, model, ...classifyGeminiHttpError(submitted.status, raw), latencyMs: Date.now() - started };
+        }
+        if (raw?.error?.message && /safety|blocked|rai|prohibited/i.test(raw.error.message)) {
+          return { ok: false, provider: this.name, model, error: "safety_refused", detail: "The provider refused this request under its safety policy.", latencyMs: Date.now() - started };
+        }
+        operationName = raw?.name;
+        if (!operationName) {
+          return { ok: false, provider: this.name, model, error: "generation_failed", detail: "The provider did not return a video operation.", latencyMs: Date.now() - started };
+        }
+      }
+      const deadline = started + timeoutMs;
+      while (Date.now() < deadline) {
+        const polled = await fetch(`https://generativelanguage.googleapis.com/v1beta/${operationName.replace(/^\/+/, "")}`, {
+          headers: { "x-goog-api-key": this.apiKey },
+        });
+        const raw = (await polled.json().catch(() => null)) as VeoOperationResponse | null;
+        if (!polled.ok) {
+          return { ok: false, provider: this.name, model, ...classifyGeminiHttpError(polled.status, raw), latencyMs: Date.now() - started, };
+        }
+        const parsed = parseVeoOperation(raw);
+        if (parsed.kind === "processing") {
+          await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
+          continue;
+        }
+        if (parsed.kind === "safety") {
+          return { ok: false, provider: this.name, model, error: "safety_refused", detail: "The provider refused this request under its safety policy.", latencyMs: Date.now() - started, };
+        }
+        if (parsed.kind === "error") {
+          return { ok: false, provider: this.name, model, error: parsed.error, detail: parsed.detail, latencyMs: Date.now() - started };
+        }
+        const bytes = parsed.bytes ?? (parsed.uri ? await downloadVeoVideo(parsed.uri, this.apiKey) : undefined);
+        if (!bytes?.length) {
+          return { ok: false, provider: this.name, model, error: "generation_failed", detail: "The provider did not return generated video.", latencyMs: Date.now() - started };
+        }
+        const duration = request.durationSeconds ?? 4;
+        const size = videoSizeFromRequest(request);
+        return {
+          ok: true,
+          provider: this.name,
+          model,
+          text: "Generated original synthesized video. This is not a human-recorded capture and not a publication.",
+          media: [{
+            mimeType: parsed.mimeType || "video/mp4",
+            byteSize: bytes.length,
+            contentBase64: bytes.toString("base64"),
+            durationSeconds: duration,
+            requestedDurationSeconds: request.durationSeconds,
+            width: size.width,
+            height: size.height,
+            frameRate: 24,
+            audioPresent: true,
+          }],
+          usage: {
+            videoCount: 1,
+            videoSeconds: duration,
+            generatedSeconds: duration,
+            outputBytes: bytes.length,
+            providerNativeUnitAmount: duration,
+          },
+          providerRequestId: operationName,
+          jobStatus: "completed",
+          latencyMs: Date.now() - started,
+        };
+      }
+      return {
+        ok: true,
+        provider: this.name,
+        model,
+        text: "Video generation is still processing.",
+        media: [],
+        usage: {},
+        providerRequestId: operationName,
+        jobStatus: "processing",
+        latencyMs: Date.now() - started,
+      };
+    } catch (err) {
+      const timeout = err instanceof Error && err.name === "AbortError";
+      return {
+        ok: false,
+        provider: this.name,
+        model,
+        error: timeout ? "timeout" : "unavailable",
+        detail: timeout ? "Provider timed out." : "Provider is unreachable.",
+        latencyMs: Date.now() - started,
+      };
+    }
+  }
+}
+
+export function buildVeoPredictBody(request: ProviderInvokeRequest, prompt: string) {
+  const image = request.images?.[0];
+  const bytes = image?.dataUrl.includes(",") ? image.dataUrl.split(",")[1] : undefined;
+  return {
+    instances: [{
+      prompt,
+      ...(bytes ? { image: { bytesBase64Encoded: bytes, mimeType: image?.mimeType || "image/png" } } : {}),
+    }],
+    parameters: {
+      aspectRatio: request.aspectRatio === "9:16" ? "9:16" : "16:9",
+      resolution: request.resolution === "1080p" || request.resolution === "4k" ? request.resolution : "720p",
+      durationSeconds: request.durationSeconds ?? 4,
+      sampleCount: 1,
+    },
+  };
+}
+
+type VeoOperationResponse = {
+  name?: string;
+  done?: boolean;
+  error?: { code?: number; status?: string; message?: string };
+  response?: {
+    generateVideoResponse?: {
+      generatedSamples?: Array<{ video?: { uri?: string; bytesBase64Encoded?: string; mimeType?: string } }>;
+      raiMediaFilteredCount?: number;
+      raiMediaFilteredReasons?: string[];
+    };
+  };
+};
+
+export function parseVeoOperation(raw: VeoOperationResponse | null):
+  | { kind: "processing" }
+  | { kind: "safety" }
+  | { kind: "error"; error: Extract<ProviderResult, { ok: false }>["error"]; detail: string }
+  | { kind: "ready"; uri?: string; bytes?: Buffer; mimeType?: string } {
+  if (!raw) return { kind: "error", error: "provider_error", detail: "The provider returned an empty operation." };
+  if (raw.error?.message) {
+    const message = raw.error.message.toLowerCase();
+    if (message.includes("safety") || message.includes("blocked") || message.includes("rai") || message.includes("prohibited")) {
+      return { kind: "safety" };
+    }
+    const classified = classifyGeminiHttpError(raw.error.code ?? 500, raw);
+    return { kind: "error", error: classified.error, detail: classified.detail };
+  }
+  if (!raw.done) return { kind: "processing" };
+  const response = raw.response?.generateVideoResponse;
+  if ((response?.raiMediaFilteredCount ?? 0) > 0 || response?.raiMediaFilteredReasons?.length) {
+    return { kind: "safety" };
+  }
+  const video = response?.generatedSamples?.[0]?.video;
+  if (!video?.uri && !video?.bytesBase64Encoded) {
+    return { kind: "error", error: "generation_failed", detail: "The provider did not return generated video." };
+  }
+  return {
+    kind: "ready",
+    uri: video.uri,
+    bytes: video.bytesBase64Encoded ? Buffer.from(video.bytesBase64Encoded, "base64") : undefined,
+    mimeType: video.mimeType || "video/mp4",
+  };
+}
+
+function videoSizeFromRequest(request: ProviderInvokeRequest): { width: number; height: number } {
+  const long = request.resolution === "4k" ? 3840 : request.resolution === "1080p" ? 1920 : 1280;
+  const short = request.resolution === "4k" ? 2160 : request.resolution === "1080p" ? 1080 : 720;
+  return request.aspectRatio === "9:16" ? { width: short, height: long } : { width: long, height: short };
+}
+
+async function downloadVeoVideo(uri: string, apiKey: string): Promise<Buffer | undefined> {
+  const res = await fetch(uri, { headers: { "x-goog-api-key": apiKey }, redirect: "follow" });
+  if (!res.ok) return undefined;
+  return Buffer.from(await res.arrayBuffer());
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isSafetyFinish(reason?: string) {
@@ -203,7 +388,7 @@ function sanitizeGeminiDetail(detail: string): string {
 
 export function classifyGeminiHttpError(
   status: number,
-  body: GeminiGenerateResponse | null,
+  body: { error?: { code?: number; status?: string; message?: string } } | null,
 ): { error: Extract<ProviderResult, { ok: false }>["error"]; detail: string } {
   const statusName = String(body?.error?.status ?? "").toUpperCase();
   const message = String(body?.error?.message ?? "").toLowerCase();

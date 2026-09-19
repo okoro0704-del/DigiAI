@@ -4,6 +4,7 @@ export type HeldMedia = {
   filename?: string;
   width?: number;
   height?: number;
+  durationSeconds?: number;
   canonicalAssetId?: string;
   createdAt: number;
 };

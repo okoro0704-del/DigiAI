@@ -34,7 +34,7 @@ export type ExecutionMeta = {
   capability?: string;
   latencyMs: number;
   sourcesUsed: string[];
-  finishState: "completed" | "failed" | "provider_unavailable" | "source_unavailable" | "unauthorized" | "unsupported_capability";
+  finishState: "completed" | "failed" | "provider_unavailable" | "source_unavailable" | "unauthorized" | "unsupported_capability" | "processing";
 };
 
 export type CapabilityHealth = {
@@ -136,6 +136,12 @@ export type HealthResponse = {
     configuredCount: number;
   };
   music?: {
+    canonicalPersistence: {
+      available: boolean;
+      status: "available" | "unavailable";
+    };
+  };
+  video?: {
     canonicalPersistence: {
       available: boolean;
       status: "available" | "unavailable";

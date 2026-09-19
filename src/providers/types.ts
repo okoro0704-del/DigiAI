@@ -14,6 +14,8 @@ export type ProviderUsage = {
   inputBytes?: number;
   outputBytes?: number;
   trackCount?: number;
+  videoCount?: number;
+  videoSeconds?: number;
   inputCharacters?: number;
   providerNativeUnitAmount?: number;
 };
@@ -25,6 +27,8 @@ export type ProviderMediaOutput = {
   byteSize?: number;
   durationSeconds?: number;
   requestedDurationSeconds?: number;
+  frameRate?: number;
+  audioPresent?: boolean;
   sampleRate?: number;
   channels?: number;
   contentBase64?: string;
@@ -43,6 +47,7 @@ export type ProviderSuccess = {
   language?: string;
   segments?: Array<{ startSeconds?: number; endSeconds?: number; text: string }>;
   providerRequestId?: string;
+  jobStatus?: "submitted" | "processing" | "completed";
   latencyMs: number;
 };
 
@@ -75,7 +80,8 @@ export type ProviderFailure = {
     | "voice_profile_invalid"
     | "invalid_music_request"
     | "duration_too_long"
-    | "unsupported_format";
+    | "unsupported_format"
+    | "invalid_video_request";
   detail: string;
   latencyMs: number;
 };
@@ -100,7 +106,7 @@ export type ProviderInvokeRequest = {
   model?: string;
   structuredOutput?: boolean;
   capability?: string;
-  operation?: "generate" | "edit" | "analyze" | "transcribe" | "translate" | "speak" | "converse" | "compose";
+  operation?: "generate" | "edit" | "analyze" | "transcribe" | "translate" | "speak" | "converse" | "compose" | "image_to_video";
   images?: ProviderImageInput[];
   imageCount?: number;
   size?: string;
@@ -114,6 +120,11 @@ export type ProviderInvokeRequest = {
   speakingRate?: number;
   durationSeconds?: number;
   vocalMode?: "instrumental" | "generated_vocal" | "auto";
+  aspectRatio?: string;
+  resolution?: string;
+  providerOperationId?: string;
+  pollIntervalMs?: number;
+  timeoutMs?: number;
 };
 
 export interface IntelligenceProvider {

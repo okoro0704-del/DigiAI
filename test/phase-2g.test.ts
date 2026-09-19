@@ -516,7 +516,8 @@ test("42 health MUSIC state and no raw credentials", async () => {
   expect(body.capabilities.MUSIC.supported).toBe(true);
   expect(body.capabilities.MUSIC.configured).toBe(true);
   expect(body.capabilities.MUSIC.runtimeVerified).toBe(false);
-  expect(body.capabilities.VIDEO.supported).toBe(false);
+  expect(body.capabilities.VIDEO.supported).toBe(true);
+  expect(body.capabilities.VIDEO.configured).toBe(true);
   expect(body.music.canonicalPersistence.status).toBe("unavailable");
   expect(JSON.stringify(body)).not.toMatch(/AIza|test-secret|sk-/);
 });

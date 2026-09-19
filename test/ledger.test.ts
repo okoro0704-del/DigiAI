@@ -225,7 +225,7 @@ test("pre-execution failure has no fake cost", async () => {
     method: "POST",
     url: "/v1/ask",
     headers: headers(),
-    payload: { message: "make a film", capability: "VIDEO" },
+    payload: { message: "call a tool", capability: "TOOL_REASON" },
   });
   expect(live.store.ledger[0]?.errorClass).toBe("unsupported_capability");
   expect(live.store.ledger[0]?.estimatedProviderCost).toBeNull();

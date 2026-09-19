@@ -39,7 +39,8 @@ export class MemoryStore implements DigiAiStore {
   }
 
   async findReceiptByIdempotency(callerId: string, idempotencyKey: string) {
-    return this.receipts.find((row) => row.callerId === callerId && row.idempotencyKey === idempotencyKey) ?? null;
+    const matches = this.receipts.filter((row) => row.callerId === callerId && row.idempotencyKey === idempotencyKey);
+    return matches.find((row) => row.resultStatus === "completed") ?? matches.at(-1) ?? null;
   }
 
   async updateReceiptSnapshot(receiptId: string, resultSnapshot: RequestReceipt["resultSnapshot"]) {

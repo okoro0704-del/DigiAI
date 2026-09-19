@@ -185,6 +185,7 @@ export class MemoryDrive implements SovereignDrive {
         byteSize: String(input.bytes.length),
         width: input.width != null ? String(input.width) : "",
         height: input.height != null ? String(input.height) : "",
+        durationSeconds: input.durationSeconds != null ? String(input.durationSeconds) : "",
       },
     });
     return { ok: true, reference: { assetId, system: "sovereign-drive", tenantId: input.tenantId || input.actorTrustId }, hash, sizeBytes: input.bytes.length };

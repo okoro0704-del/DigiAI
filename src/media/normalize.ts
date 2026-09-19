@@ -55,6 +55,7 @@ export async function normalizeGeneratedMedia(input: {
           filename,
           width: output.width,
           height: output.height,
+          durationSeconds: output.durationSeconds,
         });
       }
       const written = await input.drive.writeGenerated({
@@ -124,7 +125,8 @@ export async function persistHeldGeneratedMedia(input: {
     bytes: held.bytes,
     filename: held.filename || filenameFor(held.mimeType),
     mediaType: held.mimeType,
-    capability: input.capability ?? (held.mimeType.startsWith("audio/") ? "TEXT_TO_SPEECH" : "IMAGE"),
+    capability: input.capability ?? (held.mimeType.startsWith("video/") ? "VIDEO" : held.mimeType.startsWith("audio/") ? "TEXT_TO_SPEECH" : "IMAGE"),
+    durationSeconds: held.durationSeconds,
     providerId: input.providerId,
     modelId: input.modelId,
     sourceAssetIds: input.sourceAssetIds,
@@ -169,6 +171,8 @@ function mediaResult(
     height: output.height,
     durationSeconds: output.durationSeconds,
     requestedDurationSeconds: output.requestedDurationSeconds,
+    frameRate: output.frameRate,
+    audioPresent: output.audioPresent,
     sampleRate: output.sampleRate,
     channels: output.channels,
     byteSize: output.byteSize,
@@ -202,6 +206,10 @@ function filenameFor(mimeType: string) {
     if (mimeType.includes("ogg") || mimeType.includes("opus")) return "generated.ogg";
     if (mimeType.includes("aac") || mimeType.includes("mp4")) return "generated.aac";
     return "generated.mp3";
+  }
+  if (mimeType.startsWith("video/")) {
+    if (mimeType.includes("webm")) return "generated.webm";
+    return "generated.mp4";
   }
   return "generated.png";
 }

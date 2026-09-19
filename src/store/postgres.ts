@@ -137,7 +137,8 @@ export class PostgresStore implements DigiAiStore {
     const result = await this.pool.query(
       `SELECT payload FROM request_receipts
        WHERE payload->>'callerId' = $1 AND payload->>'idempotencyKey' = $2
-       ORDER BY created_at ASC LIMIT 1`,
+       ORDER BY CASE WHEN payload->>'resultStatus' = 'completed' THEN 0 ELSE 1 END, created_at DESC
+       LIMIT 1`,
       [callerId, idempotencyKey],
     );
     return result.rows[0] ? (result.rows[0].payload as RequestReceipt) : null;

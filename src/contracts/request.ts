@@ -2,6 +2,7 @@ import type { EntityContext } from "./actor.js";
 import type { CapabilityId } from "./capabilities.js";
 import type { AudioInputReference, AudioOutputFormat, ImageConstraints, ImageInputReference, MediaOperation } from "./media.js";
 import type { MusicOutputFormat, VocalMode } from "./music.js";
+import type { VideoAudioMode, VideoQuality, VideoResolution } from "./video.js";
 import type { SpeechTask } from "./speech.js";
 import type { PrivacyClass } from "./privacy.js";
 
@@ -51,6 +52,9 @@ export type AskConstraints = {
   structure?: string;
   lyrics?: string;
   musicOutputFormat?: MusicOutputFormat;
+  resolution?: VideoResolution;
+  videoQuality?: VideoQuality;
+  audioMode?: VideoAudioMode;
 };
 
 export type DigiAiAskInput = {

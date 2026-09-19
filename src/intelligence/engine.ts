@@ -30,6 +30,9 @@ import {
   voiceResult,
 } from "./speech.js";
 import { buildMusicBrief, expectedMusicDuration, musicAnswer, parseMusicRequest, selectMusicModel } from "./music.js";
+import { buildVideoBrief, parseVideoRequest, selectVideoModel, videoAnswer, videoPixelSize, VEO_FRAME_RATE } from "./video.js";
+import { videoJobHold, videoJobKey } from "../media/video-jobs.js";
+import type { VideoOperation } from "../contracts/video.js";
 import { ProviderPool } from "../providers/pool.js";
 import type { IntelligenceProvider, ProviderResult } from "../providers/types.js";
 import { executeWithFailover } from "../routing/execute.js";
@@ -176,6 +179,7 @@ export async function handleAsk(input: {
     capability !== "TEXT_TO_SPEECH" &&
     capability !== "VOICE" &&
     capability !== "MUSIC" &&
+    capability !== "VIDEO" &&
     body.constraints?.allowFailover !== false &&
     deps.config.allowFailover;
   const forceProvider =
@@ -251,6 +255,29 @@ export async function handleAsk(input: {
       },
       receiptId,
     };
+  }
+
+  if (capability === "VIDEO") {
+    return handleVideoAsk({
+      deps,
+      actor,
+      caller,
+      body,
+      requestId,
+      accessToken,
+      correlationId,
+      capability,
+      privacyClass,
+      operation: (operation === "image_to_video" ? "image_to_video" : "generate") as VideoOperation,
+      sources,
+      provenance,
+      sourceUnavailable,
+      startedAt,
+      drive,
+      tenantId,
+      pool,
+      forceProvider,
+    });
   }
 
   if (capability === "MUSIC") {
@@ -1043,6 +1070,289 @@ async function handleMusicAsk(input: {
   };
 }
 
+async function handleVideoAsk(input: {
+  deps: EngineDeps;
+  actor: ActorContext;
+  caller: CallerApplication;
+  body: DigiAiAskInput;
+  requestId: string;
+  accessToken?: string;
+  correlationId: string;
+  capability: CapabilityId;
+  privacyClass: string;
+  operation: VideoOperation;
+  sources: string[];
+  provenance: ProvenanceItem[];
+  sourceUnavailable: boolean;
+  startedAt: string;
+  drive: SovereignDrive;
+  tenantId?: string;
+  pool: ProviderPool;
+  forceProvider?: string;
+}): Promise<DigiAiAskResponse> {
+  const images = input.body.images ?? [];
+  if (images.length > 1) {
+    throw new DigiAiError(400, "invalid_media", "VIDEO image_to_video accepts at most one authorized source image.");
+  }
+  const resolvedImages = images.length
+    ? await resolveImageInputs({
+        images,
+        config: input.deps.config,
+        drive: input.drive,
+        actorTrustId: input.actor.trustId,
+        callerId: input.caller.id,
+        tenantId: input.tenantId,
+        accessToken: input.accessToken,
+      })
+    : [];
+  const video = parseVideoRequest({
+    message: input.body.message,
+    operation: input.operation,
+    hasSourceImage: resolvedImages.length > 0,
+    constraints: input.body.constraints,
+    config: input.deps.config,
+  });
+  const selectedModel = selectVideoModel(video);
+  const routedConfig = {
+    ...input.deps.config,
+    defaultModels: { ...input.deps.config.defaultModels, VIDEO: selectedModel },
+  };
+  const count = video.count;
+  const brief = buildVideoBrief(video);
+  const pixels = videoPixelSize(video.aspectRatio, video.resolution);
+  const media: GeneratedMediaResult[] = [];
+  let lastPlan: Awaited<ReturnType<typeof executeWithFailover>> | undefined;
+  let lastRecorded: Awaited<ReturnType<typeof persistAsk>> | undefined;
+  const holdKeyValue = input.body.idempotencyKey ? videoJobKey(input.caller.id, input.body.idempotencyKey) : undefined;
+  let heldJob = holdKeyValue ? videoJobHold.get(holdKeyValue) : undefined;
+  if (!heldJob?.operationId && input.body.idempotencyKey) {
+    const existing = await input.deps.store.findReceiptByIdempotency?.(input.caller.id, input.body.idempotencyKey);
+    const snapshot = existing?.resultSnapshot as { providerOperationId?: string } | undefined;
+    if (existing?.resultStatus === "processing" && snapshot?.providerOperationId) {
+      heldJob = {
+        operationId: snapshot.providerOperationId,
+        requestId: existing.requestId,
+        receiptId: existing.receiptId,
+        model: selectedModel,
+        status: "processing",
+        createdAt: Date.now(),
+      };
+    }
+  }
+
+  for (let index = 0; index < count; index += 1) {
+    const plan = await executeWithFailover({
+      config: routedConfig,
+      pool: input.pool,
+      capability: "VIDEO",
+      privacyClass: input.privacyClass as import("../contracts/privacy.js").PrivacyClass,
+      allowFailover: false,
+      forceProvider: input.forceProvider,
+      request: {
+        messages: [{ role: "user", content: brief }],
+        capability: "VIDEO",
+        operation: video.operation,
+        durationSeconds: video.durationSeconds,
+        aspectRatio: video.aspectRatio,
+        resolution: video.resolution,
+        providerOperationId: index === 0 ? heldJob?.operationId : undefined,
+        pollIntervalMs: input.deps.config.videoPollMs,
+        timeoutMs: input.deps.config.videoTimeoutMs,
+        images: resolvedImages.map((image) => ({
+          mimeType: image.mimeType,
+          dataUrl: image.dataUrl,
+          filename: image.filename,
+        })),
+      },
+    });
+    lastPlan = plan;
+    if (plan.final?.ok && plan.final.providerRequestId && holdKeyValue) {
+      videoJobHold.put(holdKeyValue, {
+        operationId: plan.final.providerRequestId,
+        requestId: input.requestId,
+        model: selectedModel,
+        status: plan.final.jobStatus === "completed" ? "completed" : "processing",
+      });
+    }
+    if (plan.final?.ok && plan.final.jobStatus === "processing") {
+      lastRecorded = await persistAsk({
+        deps: input.deps,
+        actor: input.actor,
+        caller: input.caller,
+        usageId: newId("use"),
+        receiptId: newId("rcpt"),
+        requestId: input.requestId,
+        attemptIndex: index + 1,
+        correlationId: input.correlationId,
+        entitySlug: input.body.entity?.slug,
+        capability: "VIDEO",
+        privacyClass: input.privacyClass,
+        providerId: plan.final.provider,
+        modelId: plan.final.model ?? selectedModel,
+        startedAt: input.startedAt,
+        latencyMs: plan.final.latencyMs,
+        success: false,
+        status: "processing",
+        providerRequestId: plan.final.providerRequestId,
+        operation: video.operation,
+        sources: input.sources,
+        routeExplanation: `${plan.explanation}; logicalRequestId=${input.requestId}; processing operation=${plan.final.providerRequestId}`,
+        resultStatus: "processing",
+        resultSnapshot: {
+          answer: videoAnswer(0, true),
+          media: [],
+          finishState: "processing",
+          providerOperationId: plan.final.providerRequestId,
+        },
+      });
+      clearResolvedImages(resolvedImages);
+      return {
+        ok: true,
+        service: "digi-ai",
+        answer: videoAnswer(0, true),
+        provenance: input.provenance,
+        usage: snapshotFromRecord(lastRecorded.usage),
+        execution: {
+          requestId: input.requestId,
+          correlationId: input.correlationId,
+          provider: plan.final.provider,
+          model: plan.final.model ?? selectedModel,
+          capability: "VIDEO",
+          latencyMs: plan.final.latencyMs,
+          sourcesUsed: input.sources,
+          finishState: "processing",
+        },
+        receiptId: lastRecorded.receiptId,
+        media: [],
+      };
+    }
+    if (plan.final?.ok && plan.final.media?.length) {
+      const outputs = plan.final.media.map((row) => ({
+        ...row,
+        durationSeconds: row.durationSeconds ?? video.durationSeconds,
+        requestedDurationSeconds: video.durationSeconds,
+        width: row.width ?? pixels.width,
+        height: row.height ?? pixels.height,
+        frameRate: row.frameRate ?? VEO_FRAME_RATE,
+        audioPresent: row.audioPresent ?? true,
+      }));
+      const normalized = await normalizeGeneratedMedia({
+        outputs,
+        providerId: plan.final.provider,
+        modelId: plan.final.model,
+        operation: video.operation,
+        actorTrustId: input.actor.trustId,
+        applicationId: input.caller.id,
+        sourceAssetIds: resolvedImages.map((image) => image.assetId).filter((id): id is string => Boolean(id)),
+        persistCanonical: video.persistCanonical === true,
+        drive: input.drive,
+        tenantId: input.tenantId,
+        accessToken: input.accessToken,
+        executionRef: input.requestId,
+        idempotencyKey: index === 0 ? input.body.idempotencyKey : undefined,
+        maxTransientBytes: input.deps.config.maxTransientBytes,
+        capability: "VIDEO",
+        logicalRequestId: input.requestId,
+      });
+      media.push(...normalized);
+    }
+    const native = plan.final?.ok && plan.final.jobStatus !== "processing"
+      ? nativeUsageFromTokens({
+          ...plan.final.usage,
+          videoCount: 1,
+          videoSeconds: plan.final.media?.[0]?.durationSeconds ?? video.durationSeconds,
+          generatedSeconds: plan.final.media?.[0]?.durationSeconds ?? video.durationSeconds,
+          outputBytes: plan.final.media?.[0]?.byteSize,
+          providerNativeUnitAmount: plan.final.media?.[0]?.durationSeconds ?? video.durationSeconds,
+        })
+      : undefined;
+    lastRecorded = await persistAsk({
+      deps: input.deps,
+      actor: input.actor,
+      caller: input.caller,
+      usageId: newId("use"),
+      receiptId: newId("rcpt"),
+      requestId: input.requestId,
+      attemptIndex: index + 1,
+      correlationId: input.correlationId,
+      entitySlug: input.body.entity?.slug,
+      capability: "VIDEO",
+      privacyClass: input.privacyClass,
+      providerId: plan.final?.provider ?? input.deps.provider.name,
+      modelId: plan.final && plan.final.ok ? plan.final.model : selectedModel,
+      startedAt: input.startedAt,
+      latencyMs: plan.final?.latencyMs ?? 0,
+      success: Boolean(plan.final?.ok && media.length),
+      status: !plan.final ? "provider_unavailable" : plan.final.ok && media.length ? "completed" : "failed",
+      nativeUsage: native,
+      providerRequestId: plan.final?.ok ? plan.final.providerRequestId : undefined,
+      errorClass: plan.final && !plan.final.ok ? plan.final.error : undefined,
+      operation: video.operation,
+      sources: input.sources,
+      routeExplanation: `${plan.explanation}; logicalRequestId=${input.requestId}; clip=${index + 1}/${count}`,
+      resultStatus: input.sourceUnavailable ? "source_unavailable" : plan.final?.ok && media.length ? "completed" : "failed",
+      idempotencyKey: index === count - 1 ? input.body.idempotencyKey : undefined,
+      resultSnapshot: {
+        answer: videoAnswer(media.length || count, false),
+        media: sanitizeMediaForLedger(media),
+        finishState: plan.final?.ok && media.length ? "completed" : "failed",
+        canonicalAssetReference: media.find((row) => row.canonicalAssetReference)?.canonicalAssetReference,
+        providerOperationId: plan.final?.ok ? plan.final.providerRequestId : undefined,
+      },
+    });
+    if (!plan.final?.ok && !media.length) {
+      clearResolvedImages(resolvedImages);
+      return {
+        ok: false,
+        service: "digi-ai",
+        error: plan.final?.error === "unavailable" ? "provider_unavailable" : plan.final?.error === "safety_refused" ? "safety_refused" : "failed",
+        message: plan.final?.detail || "Video generation failed.",
+        provenance: input.provenance,
+        usage: snapshotFromRecord(lastRecorded.usage),
+        execution: {
+          requestId: input.requestId,
+          correlationId: input.correlationId,
+          provider: lastRecorded.usage.provider,
+          model: lastRecorded.usage.model,
+          capability: "VIDEO",
+          latencyMs: lastRecorded.usage.latencyMs,
+          sourcesUsed: input.sources,
+          finishState: "failed",
+        },
+        receiptId: lastRecorded.receiptId,
+      };
+    }
+  }
+
+  clearResolvedImages(resolvedImages);
+  input.provenance.unshift({
+    kind: "generated",
+    system: "digi-ai",
+    retrievedAt: nowIso(),
+    note: "Generated synthesized video. Not a human-recorded capture and not a publication.",
+  });
+  const recorded = lastRecorded!;
+  return {
+    ok: true,
+    service: "digi-ai",
+    answer: videoAnswer(media.length, false),
+    provenance: input.provenance,
+    usage: snapshotFromRecord(recorded.usage),
+    execution: {
+      requestId: input.requestId,
+      correlationId: input.correlationId,
+      provider: lastPlan?.final?.ok ? lastPlan.final.provider : recorded.usage.provider,
+      model: lastPlan?.final?.ok ? lastPlan.final.model : recorded.usage.model,
+      capability: "VIDEO",
+      latencyMs: recorded.usage.latencyMs,
+      sourcesUsed: input.sources,
+      finishState: "completed",
+    },
+    receiptId: recorded.receiptId,
+    media,
+  };
+}
+
 function failSpeech(
   input: { requestId: string; correlationId: string; capability: string; sources: string[]; provenance: ProvenanceItem[]; deps: EngineDeps },
   recorded: { usage: import("../contracts/usage.js").UsageRecord; receiptId: string },
@@ -1088,16 +1398,16 @@ async function persistAsk(input: {
   startedAt?: string;
   latencyMs: number;
   success: boolean;
-  status: "completed" | "failed" | "provider_unavailable" | "unsupported_capability";
+  status: "completed" | "failed" | "provider_unavailable" | "unsupported_capability" | "processing";
   errorClass?: string;
   nativeUsage?: NativeUsage;
   providerRequestId?: string;
   operation: string;
   sources: string[];
   routeExplanation?: string;
-  resultStatus: "completed" | "failed" | "unauthorized" | "provider_unavailable" | "source_unavailable" | "unsupported_capability";
+  resultStatus: "completed" | "failed" | "unauthorized" | "provider_unavailable" | "source_unavailable" | "unsupported_capability" | "processing";
   idempotencyKey?: string;
-  resultSnapshot?: { answer?: string; media?: unknown; finishState?: string; canonicalAssetReference?: string; speech?: VoiceInteractionResult };
+  resultSnapshot?: { answer?: string; media?: unknown; finishState?: string; canonicalAssetReference?: string; speech?: VoiceInteractionResult; providerOperationId?: string };
 }) {
   const ledger = buildLedgerEntry({
     receiptId: input.receiptId,
@@ -1173,6 +1483,12 @@ function resolveOperation(capability: string, requested?: MediaOperation): Media
   if (capability === "TEXT_TO_SPEECH") return "speak";
   if (capability === "VOICE") return "converse";
   if (capability === "MUSIC") return "compose";
+  if (capability === "VIDEO") {
+    if (requested && requested !== "generate" && requested !== "image_to_video") {
+      throw new DigiAiError(400, "invalid_request", "Unsupported VIDEO operation.");
+    }
+    return requested === "image_to_video" ? "image_to_video" : "generate";
+  }
   return requested;
 }
 
@@ -1203,6 +1519,7 @@ async function replayIdempotent(input: {
       modelId: existing.model,
       sourceAssetIds: media.flatMap((row) => row.provenance.sourceAssetIds),
       executionRef: existing.requestId,
+      capability: existing.capability,
     });
     media = media.map((row) =>
       retried.persistenceState === "canonical" && retried.canonicalAssetReference

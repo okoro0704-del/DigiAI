@@ -18,6 +18,7 @@ export type NativeUsage = {
   inputBytes?: number;
   outputBytes?: number;
   trackCount?: number;
+  videoCount?: number;
   generatedAudioMinutes?: number;
   inputCharacters?: number;
   providerNativeUnitAmount?: number;
@@ -58,7 +59,7 @@ export type UsageRecord = {
   completedAt?: string;
   latencyMs: number;
   success: boolean;
-  status?: "completed" | "failed" | "provider_unavailable" | "unsupported_capability";
+  status?: "completed" | "failed" | "provider_unavailable" | "unsupported_capability" | "processing";
   createdAt: string;
 };
 
@@ -76,7 +77,7 @@ export type RequestReceipt = {
   model?: string;
   capability?: string;
   routeExplanation?: string;
-  resultStatus: "completed" | "failed" | "unauthorized" | "provider_unavailable" | "source_unavailable" | "unsupported_capability";
+  resultStatus: "completed" | "failed" | "unauthorized" | "provider_unavailable" | "source_unavailable" | "unsupported_capability" | "processing";
   usageId?: string;
   idempotencyKey?: string;
   resultSnapshot?: {
@@ -85,6 +86,7 @@ export type RequestReceipt = {
     finishState?: string;
     canonicalAssetReference?: string;
     speech?: unknown;
+    providerOperationId?: string;
   };
   createdAt: string;
 };

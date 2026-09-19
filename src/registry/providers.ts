@@ -39,7 +39,7 @@ export const PROVIDER_CATALOG: ProviderCatalogRecord[] = [
     id: "gemini",
     type: "llm",
     deploymentType: "cloud",
-    capabilities: [...TEXT_CAPABILITIES, "MUSIC"],
+    capabilities: [...TEXT_CAPABILITIES, "MUSIC", "VIDEO"],
     usageReporting: true,
     pricingMetadata: true,
     maxPrivacyClass: "PRIVATE",

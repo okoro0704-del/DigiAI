@@ -19,6 +19,8 @@ export function nativeUsageFromTokens(input?: {
   inputBytes?: number;
   outputBytes?: number;
   trackCount?: number;
+  videoCount?: number;
+  videoSeconds?: number;
   generatedAudioMinutes?: number;
   inputCharacters?: number;
   providerNativeUnitAmount?: number;
@@ -40,6 +42,8 @@ export function nativeUsageFromTokens(input?: {
   if (typeof input.inputBytes === "number") native.inputBytes = input.inputBytes;
   if (typeof input.outputBytes === "number") native.outputBytes = input.outputBytes;
   if (typeof input.trackCount === "number") native.trackCount = input.trackCount;
+  if (typeof input.videoCount === "number") native.videoCount = input.videoCount;
+  if (typeof input.videoSeconds === "number") native.videoSeconds = input.videoSeconds;
   if (typeof input.generatedAudioMinutes === "number") native.generatedAudioMinutes = input.generatedAudioMinutes;
   if (typeof input.inputCharacters === "number") native.inputCharacters = input.inputCharacters;
   if (typeof input.providerNativeUnitAmount === "number") native.providerNativeUnitAmount = input.providerNativeUnitAmount;
@@ -100,11 +104,13 @@ export function buildUsageRecord(input: {
     currency: cost.currency,
     estimatedProviderCost: cost.estimatedProviderCost,
     actualProviderCost: null,
-    providerNativeUnits: input.nativeUsage?.providerNativeUnitAmount
-      ? { type: "generation", amount: input.nativeUsage.providerNativeUnitAmount }
-      : input.nativeUsage?.trackCount
-        ? { type: "generation", amount: input.nativeUsage.trackCount }
-        : null,
+    providerNativeUnits: input.nativeUsage?.videoSeconds
+      ? { type: "video_seconds", amount: input.nativeUsage.videoSeconds }
+      : input.nativeUsage?.providerNativeUnitAmount
+        ? { type: "generation", amount: input.nativeUsage.providerNativeUnitAmount }
+        : input.nativeUsage?.trackCount
+          ? { type: "generation", amount: input.nativeUsage.trackCount }
+          : null,
     digiAiUnits: null,
     errorClass: input.errorClass,
     startedAt: input.startedAt,

@@ -76,8 +76,9 @@ export function estimateProviderCost(input: {
     if (key === "totalTokens" || key === "imageSize" || key === "imageWidth" || key === "imageHeight" || key === "imageBytes") continue;
     if (key === "inputBytes" || key === "outputBytes" || key === "audioMinutes") continue;
     if (key === "generatedAudioMinutes" || key === "inputCharacters") continue;
-    if (key === "generatedSeconds" && pricing.dimensions.some((dim) => dim.kind === "generation")) continue;
-    if (key === "providerNativeUnitAmount" && (usage.trackCount ?? 0) > 0) continue;
+    if (key === "generatedSeconds" && pricing.dimensions.some((dim) => dim.kind === "generation" || dim.kind === "video_seconds")) continue;
+    if (key === "providerNativeUnitAmount" && ((usage.trackCount ?? 0) > 0 || (usage.videoSeconds ?? 0) > 0)) continue;
+    if (key === "videoCount" || (key === "trackCount" && pricing.dimensions.some((dim) => dim.kind === "video_seconds"))) continue;
     if (key === "imageCount" && !pricing.dimensions.some((dim) => dim.kind === "image")) continue;
     const mapped = NATIVE_TO_DIMENSION[key];
     if (!mapped) {

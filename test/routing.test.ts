@@ -140,7 +140,7 @@ test("unsupported capability fails cleanly", async () => {
     method: "POST",
     url: "/v1/ask",
     headers: callerHeaders(),
-    payload: { message: "Make a video.", capability: "VIDEO" },
+    payload: { message: "Call a tool.", capability: "TOOL_REASON" },
   });
   expect(res.statusCode).toBe(400);
   expect(res.json().error).toBe("unsupported_capability");
@@ -359,7 +359,8 @@ test("health lists capability readiness without secrets", async () => {
   expect(body.capabilities.WRITE.supported).toBe(true);
   expect(body.capabilities.WRITE.configured).toBe(true);
   expect(body.capabilities.WRITE.runtimeVerified).toBe(false);
-  expect(body.capabilities.VIDEO.status).toBe("unsupported");
+  expect(body.capabilities.VIDEO.status).toBe("unconfigured");
+  expect(body.capabilities.TOOL_REASON.status).toBe("unsupported");
   expect(body.providers.test.configured).toBe(true);
   expect(body.providers.openai.configured).toBe(false);
   expect(JSON.stringify(body)).not.toMatch(/sk-|test-secret|OPENAI_API_KEY=/);

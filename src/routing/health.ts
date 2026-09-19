@@ -107,6 +107,12 @@ export function buildHealthResponse(
         status: drive.status().write ? "available" : "unavailable",
       },
     },
+    video: {
+      canonicalPersistence: {
+        available: Boolean(drive.status().write),
+        status: drive.status().write ? "available" : "unavailable",
+      },
+    },
   };
 }
 
