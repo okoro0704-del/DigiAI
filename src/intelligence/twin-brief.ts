@@ -13,8 +13,11 @@ import { clip, newId, nowIso } from "../lib/crypto.js";
 import { DigiAiError } from "../lib/http.js";
 import { SYSTEM_POLICY, wrapCanonicalData } from "../lib/policy.js";
 import { requireSlug } from "../lib/slug.js";
+import { defaultPrivacyClass } from "../contracts/privacy.js";
 import { providerStateFromError } from "../providers/errors.js";
-import type { IntelligenceProvider, ProviderFailure } from "../providers/types.js";
+import type { ProviderFailure } from "../providers/types.js";
+import { routeCapability } from "../routing/runtime.js";
+import { buildRequestReceipt, buildUsageRecord, nativeUsageFromTokens, snapshotFromRecord } from "../usage/receipt.js";
 import type { EngineDeps } from "./engine.js";
 
 const BANNED_CLAIM = /\b(viral|trending|go(?:ing)? viral|audience growth|exploded|millions of views|guaranteed engagement)\b/i;
@@ -162,6 +165,16 @@ export async function handleTwinBrief(input: {
   let latencyMs = 0;
   let finishState: TwinBriefSuccess["execution"]["finishState"] = sourceUnavailable ? "source_unavailable" : "completed";
 
+  const capability = "THINK" as const;
+  const routed = routeCapability({
+    config: deps.config,
+    provider: deps.provider,
+    capability,
+    privacyClass: defaultPrivacyClass(),
+  });
+  let routeExplanation = routed.decision.explanation;
+  let errorClass: string | undefined;
+
   if (!deps.provider.configured) {
     providerStatus = {
       state: "unbound",
@@ -169,6 +182,15 @@ export async function handleTwinBrief(input: {
       detail: "AI reasoning is unavailable — no model provider is bound.",
     };
     finishState = sourceUnavailable ? "source_unavailable" : "provider_unavailable";
+    errorClass = "provider_not_configured";
+  } else if (!routed.decision.ok) {
+    providerStatus = {
+      state: "unavailable",
+      provider: deps.provider.name,
+      detail: routed.decision.detail,
+    };
+    finishState = sourceUnavailable ? "source_unavailable" : "provider_unavailable";
+    errorClass = routed.decision.error;
   } else {
     const modelContext = buildModelContext({
       displayName,
@@ -181,6 +203,7 @@ export async function handleTwinBrief(input: {
     const started = Date.now();
     const result = await deps.provider.invoke({
       temperature: 0.3,
+      model: routed.decision.selected.modelId,
       messages: [
         { role: "system", content: `${SYSTEM_POLICY}\n${TWIN_POLICY}` },
         {
@@ -195,7 +218,7 @@ export async function handleTwinBrief(input: {
       ],
     });
     latencyMs = result.latencyMs || Date.now() - started;
-    model = result.model;
+    model = result.model ?? routed.decision.selected.modelId;
     if (result.ok) {
       usageSuccess = true;
       tokens = {
@@ -226,6 +249,7 @@ export async function handleTwinBrief(input: {
         model: result.model,
         detail: mapped.detail,
       };
+      errorClass = result.error;
       finishState = result.error === "unavailable" || result.error === "quota" || result.error === "billing"
         ? "provider_unavailable"
         : sourceUnavailable
@@ -236,7 +260,7 @@ export async function handleTwinBrief(input: {
 
   const usageId = newId("use");
   const receiptId = newId("rcpt");
-  await deps.store.recordUsage({
+  const usageRow = buildUsageRecord({
     usageId,
     requestId,
     correlationId,
@@ -244,14 +268,19 @@ export async function handleTwinBrief(input: {
     callerId: caller.id,
     entitySlug: authorizedSlug,
     tenantId: body.entity?.tenantId,
-    provider: deps.provider.name,
-    model,
-    ...tokens,
+    capability,
+    providerId: deps.provider.name,
+    modelId: model,
+    startedAt: generatedAt,
+    completedAt: generatedAt,
     latencyMs,
     success: usageSuccess,
-    createdAt: generatedAt,
+    status: usageSuccess ? "completed" : finishState === "provider_unavailable" ? "provider_unavailable" : "failed",
+    nativeUsage: nativeUsageFromTokens(tokens),
+    errorClass,
   });
-  await deps.store.recordReceipt({
+  await deps.store.recordUsage(usageRow);
+  await deps.store.recordReceipt(buildRequestReceipt({
     receiptId,
     requestId,
     correlationId,
@@ -263,10 +292,11 @@ export async function handleTwinBrief(input: {
     sourcesAccessed: sourcesUsed,
     provider: deps.provider.name,
     model,
+    capability,
+    routeExplanation,
     resultStatus: finishState === "completed" ? "completed" : finishState,
     usageId,
-    createdAt: generatedAt,
-  });
+  }));
 
   return {
     ok: true,
@@ -286,19 +316,13 @@ export async function handleTwinBrief(input: {
     sources: provenance,
     providerStatus,
     interpretationAvailable: providerStatus.state === "completed",
-    usage: {
-      usageId,
-      provider: deps.provider.name,
-      model,
-      ...tokens,
-      latencyMs,
-      success: usageSuccess,
-    },
+    usage: snapshotFromRecord(usageRow),
     execution: {
       requestId,
       correlationId,
       provider: deps.provider.name,
       model,
+      capability,
       latencyMs,
       sourcesUsed,
       finishState,

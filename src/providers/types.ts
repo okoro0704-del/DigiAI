@@ -34,6 +34,8 @@ export type ProviderMessage = {
 export type ProviderInvokeRequest = {
   messages: ProviderMessage[];
   temperature?: number;
+  /** Router-selected model. Adapters may ignore unknown ids. */
+  model?: string;
 };
 
 export interface IntelligenceProvider {

@@ -1,15 +1,19 @@
 import type { AppConfig } from "../config.js";
 import type { ActorContext, CallerApplication, EntityContext } from "../contracts/actor.js";
+import { defaultPrivacyClass, isPrivacyClass } from "../contracts/privacy.js";
 import type { DigiAiAskInput } from "../contracts/request.js";
 import type { DigiAiAskResponse } from "../contracts/response.js";
 import type { ProvenanceItem } from "../contracts/provenance.js";
-import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
+import type { RequestReceipt } from "../contracts/usage.js";
 import type { DigiNewsReader, DigiPediaReader, NewsPage, DigiPediaPage } from "../adapters/types.js";
 import { clip, newId, nowIso } from "../lib/crypto.js";
 import { DigiAiError } from "../lib/http.js";
 import { requireSlug } from "../lib/slug.js";
 import { SYSTEM_POLICY, wrapCanonicalData } from "../lib/policy.js";
 import type { IntelligenceProvider } from "../providers/types.js";
+import { resolveRequestedCapability } from "../routing/resolve-capability.js";
+import { routeCapability } from "../routing/runtime.js";
+import { buildRequestReceipt, buildUsageRecord, nativeUsageFromTokens, snapshotFromRecord } from "../usage/receipt.js";
 import type { DigiAiStore } from "../store/memory.js";
 import { proposeObjective } from "./objectives.js";
 import { selectSources } from "./sources.js";
@@ -113,19 +117,89 @@ export async function handleAsk(input: {
   }
 
   const mode = body.mode ?? "ask";
+  const capability = resolveRequestedCapability({ capability: body.capability, mode });
+  const privacyClass = isPrivacyClass(body.constraints?.privacyClass)
+    ? body.constraints.privacyClass
+    : defaultPrivacyClass();
   userParts.push(`RESPONSE MODE: ${mode}`);
+  userParts.push(`CAPABILITY: ${capability}`);
   userParts.push("If canonical data is present, ground generated text in it and say when you are interpreting.");
 
+  const usageId = newId("use");
+  const receiptId = newId("rcpt");
+  const startedAt = nowIso();
+  const routed = routeCapability({
+    config: deps.config,
+    provider: deps.provider,
+    capability,
+    privacyClass,
+  });
+
+  if (!routed.decision.ok) {
+    const error = routed.decision.error === "unsupported_capability" ? "unsupported_capability" : "provider_unavailable";
+    const usageRow = buildUsageRecord({
+      usageId,
+      requestId,
+      correlationId,
+      actorTrustId: actor.trustId,
+      callerId: caller.id,
+      entitySlug: entity.slug,
+      tenantId: entity.tenantId,
+      capability,
+      providerId: deps.provider.name,
+      startedAt,
+      latencyMs: 0,
+      success: false,
+      status: error,
+      errorClass: routed.decision.error,
+    });
+    await deps.store.recordUsage(usageRow);
+    await writeReceipt(deps.store, buildRequestReceipt({
+      receiptId,
+      requestId,
+      correlationId,
+      actorTrustId: actor.trustId,
+      callerId: caller.id,
+      entitySlug: entity.slug,
+      tenantId: entity.tenantId,
+      operation: mode,
+      sourcesAccessed: sources,
+      provider: deps.provider.name,
+      capability,
+      routeExplanation: routed.decision.explanation,
+      resultStatus: sourceUnavailable ? "source_unavailable" : error,
+      usageId,
+    }));
+    return {
+      ok: false,
+      service: "digi-ai",
+      error,
+      message: routed.decision.detail,
+      provenance,
+      usage: snapshotFromRecord(usageRow),
+      execution: {
+        requestId,
+        correlationId,
+        provider: deps.provider.name,
+        capability,
+        latencyMs: 0,
+        sourcesUsed: sources,
+        finishState: sourceUnavailable ? "source_unavailable" : error,
+      },
+      receiptId,
+    };
+  }
+
   const providerResult = await deps.provider.invoke({
+    model: routed.decision.selected.modelId,
     messages: [
       { role: "system", content: SYSTEM_POLICY },
       { role: "user", content: userParts.join("\n\n") },
     ],
   });
 
-  const usageId = newId("use");
-  const receiptId = newId("rcpt");
-  const usageRow: UsageRecord = {
+  const nativeUsage = providerResult.ok ? nativeUsageFromTokens(providerResult.usage) : undefined;
+  const usageRow = buildUsageRecord({
     usageId,
     requestId,
     correlationId,
@@ -133,20 +207,22 @@ export async function handleAsk(input: {
     callerId: caller.id,
     entitySlug: entity.slug,
     tenantId: entity.tenantId,
-    provider: providerResult.provider,
-    model: providerResult.ok ? providerResult.model : undefined,
-    inputTokens: providerResult.ok ? providerResult.usage.inputTokens : undefined,
-    outputTokens: providerResult.ok ? providerResult.usage.outputTokens : undefined,
-    totalTokens: providerResult.ok ? providerResult.usage.totalTokens : undefined,
+    capability,
+    providerId: providerResult.provider,
+    modelId: providerResult.ok ? providerResult.model : routed.decision.selected.modelId,
+    startedAt,
     latencyMs: providerResult.latencyMs,
     success: providerResult.ok,
-    createdAt: nowIso(),
-  };
+    status: providerResult.ok ? "completed" : providerResult.error === "unavailable" ? "provider_unavailable" : "failed",
+    nativeUsage,
+    providerRequestId: providerResult.ok ? providerResult.providerRequestId : undefined,
+    errorClass: providerResult.ok ? undefined : providerResult.error,
+  });
   await deps.store.recordUsage(usageRow);
 
   if (!providerResult.ok) {
     const status = providerResult.error === "unavailable" ? "provider_unavailable" : "failed";
-    await writeReceipt(deps.store, {
+    await writeReceipt(deps.store, buildRequestReceipt({
       receiptId,
       requestId,
       correlationId,
@@ -157,26 +233,25 @@ export async function handleAsk(input: {
       operation: mode,
       sourcesAccessed: sources,
       provider: providerResult.provider,
+      model: routed.decision.selected.modelId,
+      capability,
+      routeExplanation: routed.decision.explanation,
       resultStatus: sourceUnavailable ? "source_unavailable" : status,
       usageId,
-      createdAt: nowIso(),
-    });
+    }));
     return {
       ok: false,
       service: "digi-ai",
       error: status,
       message: providerResult.detail,
       provenance,
-      usage: {
-        usageId,
-        provider: providerResult.provider,
-        latencyMs: providerResult.latencyMs,
-        success: false,
-      },
+      usage: snapshotFromRecord(usageRow),
       execution: {
         requestId,
         correlationId,
         provider: providerResult.provider,
+        model: routed.decision.selected.modelId,
+        capability,
         latencyMs: providerResult.latencyMs,
         sourcesUsed: sources,
         finishState: sourceUnavailable ? "source_unavailable" : status,
@@ -193,7 +268,7 @@ export async function handleAsk(input: {
   });
 
   const objectiveCandidate = proposeObjective(message, body.draft?.actionType);
-  await writeReceipt(deps.store, {
+  await writeReceipt(deps.store, buildRequestReceipt({
     receiptId,
     requestId,
     correlationId,
@@ -205,31 +280,24 @@ export async function handleAsk(input: {
     sourcesAccessed: sources,
     provider: providerResult.provider,
     model: providerResult.model,
+    capability,
+    routeExplanation: routed.decision.explanation,
     resultStatus: "completed",
     usageId,
-    createdAt: nowIso(),
-  });
+  }));
 
   return {
     ok: true,
     service: "digi-ai",
     answer: providerResult.text,
     provenance,
-    usage: {
-      usageId,
-      provider: providerResult.provider,
-      model: providerResult.model,
-      inputTokens: providerResult.usage.inputTokens,
-      outputTokens: providerResult.usage.outputTokens,
-      totalTokens: providerResult.usage.totalTokens,
-      latencyMs: providerResult.latencyMs,
-      success: true,
-    },
+    usage: snapshotFromRecord(usageRow),
     execution: {
       requestId,
       correlationId,
       provider: providerResult.provider,
       model: providerResult.model,
+      capability,
       latencyMs: providerResult.latencyMs,
       sourcesUsed: sources,
       finishState: "completed",

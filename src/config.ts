@@ -49,6 +49,28 @@ export function loadConfig() {
     aiProvider: env("AI_PROVIDER", "unbound").toLowerCase(),
     openaiApiKey: env("OPENAI_API_KEY"),
     aiModel: env("AI_MODEL", "gpt-4o-mini"),
+    enabledProviders: env("AI_ENABLED_PROVIDERS")
+      .split(",")
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean),
+    disabledModels: env("AI_DISABLED_MODELS")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean),
+    defaultModels: {
+      THINK: env("AI_DEFAULT_MODEL_THINK") || env("AI_MODEL", "gpt-4o-mini"),
+      WRITE: env("AI_DEFAULT_MODEL_WRITE") || env("AI_MODEL", "gpt-4o-mini"),
+      SUMMARIZE: env("AI_DEFAULT_MODEL_SUMMARIZE") || env("AI_MODEL", "gpt-4o-mini"),
+      RESEARCH: env("AI_DEFAULT_MODEL_RESEARCH") || env("AI_MODEL", "gpt-4o-mini"),
+      CODE: env("AI_DEFAULT_MODEL_CODE") || env("AI_MODEL", "gpt-4o-mini"),
+      TRANSLATE: env("AI_DEFAULT_MODEL_TRANSLATE") || env("AI_MODEL", "gpt-4o-mini"),
+      RETRIEVE: env("AI_DEFAULT_MODEL_RETRIEVE") || env("AI_MODEL", "gpt-4o-mini"),
+    } as Record<string, string>,
+    cloudMaxPrivacy: (env("AI_CLOUD_MAX_PRIVACY", "PRIVATE").toUpperCase() || "PRIVATE") as
+      | "PUBLIC"
+      | "INTERNAL"
+      | "PRIVATE"
+      | "HIGHLY_SENSITIVE",
     providerTimeoutMs: Number(env("PROVIDER_TIMEOUT_MS", "20000")),
     dataDir: env("DATA_DIR"),
     allowAttestedActor: env("DIGI_AI_ALLOW_ATTESTED_ACTOR").toLowerCase() === "true",

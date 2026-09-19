@@ -1,4 +1,6 @@
 import type { EntityContext } from "./actor.js";
+import type { CapabilityId } from "./capabilities.js";
+import type { PrivacyClass } from "./privacy.js";
 
 export const DIGI_AI_MODES = ["ask", "summarize", "reason", "draft", "retrieve", "plan"] as const;
 export type DigiAiMode = (typeof DIGI_AI_MODES)[number];
@@ -19,9 +21,18 @@ export type DraftAssist = {
   blockType?: string;
 };
 
+export type AskConstraints = {
+  structuredOutput?: boolean;
+  privacyClass?: PrivacyClass;
+  maxLatency?: string;
+};
+
 export type DigiAiAskInput = {
   message: string;
   mode?: DigiAiMode;
+  /** Canonical capability. Callers do not name a provider. */
+  capability?: CapabilityId;
+  constraints?: AskConstraints;
   sources?: ContextSourceId[];
   entity?: EntityContext;
   suppliedContext?: SuppliedContext;

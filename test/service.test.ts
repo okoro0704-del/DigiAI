@@ -207,7 +207,12 @@ test("health distinguishes service from provider", async () => {
   const live = await start({ provider: new UnboundProvider() });
   const res = await live.app.inject({ method: "GET", url: "/health" });
   expect(res.statusCode).toBe(200);
-  expect(res.json()).toEqual({ ok: true, service: "digi-ai", provider: "unbound" });
+  const body = res.json();
+  expect(body.ok).toBe(true);
+  expect(body.service).toBe("digi-ai");
+  expect(body.provider).toBe("unbound");
+  expect(body.status).toBe("partial");
+  expect(JSON.stringify(body)).not.toMatch(/sk-|OPENAI_API_KEY|test-secret/);
 });
 
 test("anonymous ask is rejected", async () => {

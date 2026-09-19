@@ -20,6 +20,7 @@ export class OpenAiProvider implements IntelligenceProvider {
 
   async invoke(request: ProviderInvokeRequest): Promise<ProviderResult> {
     const started = Date.now();
+    const model = request.model ?? this.model;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -31,7 +32,7 @@ export class OpenAiProvider implements IntelligenceProvider {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          model: this.model,
+          model,
           temperature: request.temperature ?? 0.4,
           messages: request.messages,
         }),
@@ -45,7 +46,7 @@ export class OpenAiProvider implements IntelligenceProvider {
         return {
           ok: false,
           provider: this.name,
-          model: this.model,
+          model,
           error: classified.error,
           detail: classified.detail,
           latencyMs,
@@ -57,7 +58,7 @@ export class OpenAiProvider implements IntelligenceProvider {
         return {
           ok: false,
           provider: this.name,
-          model: this.model,
+          model,
           error: "empty",
           detail: "Provider returned an empty response.",
           latencyMs,
@@ -66,7 +67,7 @@ export class OpenAiProvider implements IntelligenceProvider {
       return {
         ok: true,
         provider: this.name,
-        model: raw.model ?? this.model,
+        model: raw.model ?? model,
         text,
         usage: {
           inputTokens: raw.usage?.prompt_tokens,
@@ -83,7 +84,7 @@ export class OpenAiProvider implements IntelligenceProvider {
       return {
         ok: false,
         provider: this.name,
-        model: this.model,
+        model,
         error: timeout ? "timeout" : "unavailable",
         detail: timeout ? "Provider timed out." : "Provider is unreachable.",
         latencyMs,

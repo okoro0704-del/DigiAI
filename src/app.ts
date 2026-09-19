@@ -1,7 +1,10 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import type { AppConfig } from "./config.js";
-import { CONTEXT_SOURCES, isContextSourceId, isDigiAiMode, type DigiAiAskInput } from "./contracts/request.js";
+import { isCapabilityId } from "./contracts/capabilities.js";
+import { isPrivacyClass } from "./contracts/privacy.js";
+import { CONTEXT_SOURCES, isContextSourceId, isDigiAiMode, type AskConstraints, type DigiAiAskInput } from "./contracts/request.js";
 import type { HealthResponse } from "./contracts/response.js";
+import { buildHealthResponse } from "./routing/health.js";
 import type { TwinBriefInput, TwinOwnerActivity } from "./contracts/twin.js";
 import { HttpDigiNewsReader } from "./adapters/diginews.js";
 import { HttpDigiPediaReader } from "./adapters/digipedia.js";
@@ -11,7 +14,7 @@ import { handleAsk } from "./intelligence/engine.js";
 import { handleTwinBrief } from "./intelligence/twin-brief.js";
 import { newId } from "./lib/crypto.js";
 import { DigiAiError } from "./lib/http.js";
-import { createProvider, providerHealth } from "./providers/router.js";
+import { createProvider } from "./providers/router.js";
 import type { IntelligenceProvider } from "./providers/types.js";
 import { createStore, type DigiAiStore } from "./store/memory.js";
 import { renderDigiAiPage } from "./ui/page.js";
@@ -24,11 +27,21 @@ export type DigiAiAppOptions = {
   store?: DigiAiStore;
 };
 
+function rejectClientRouteOverride(body: Record<string, unknown>) {
+  if ("provider" in body || "model" in body || "providerId" in body || "modelId" in body) {
+    throw new DigiAiError(400, "invalid_request", "Provider and model selection is reserved to Digi AI.");
+  }
+}
+
 function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): DigiAiAskInput {
   if (!raw || typeof raw !== "object") throw new DigiAiError(400, "invalid_request", "JSON body is required.");
   const body = raw as Record<string, unknown>;
+  rejectClientRouteOverride(body);
   if (typeof body.message !== "string") throw new DigiAiError(400, "invalid_request", "A request message is required.");
   if (body.message.length > maxMessage) throw new DigiAiError(400, "invalid_request", "Request is too large.");
+  if (body.capability !== undefined && !isCapabilityId(body.capability)) {
+    throw new DigiAiError(400, "invalid_request", "Unknown capability.");
+  }
   const sources = Array.isArray(body.sources)
     ? body.sources.filter(isContextSourceId)
     : undefined;
@@ -45,9 +58,12 @@ function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): Di
   }
   const actor = body.actor && typeof body.actor === "object" ? (body.actor as DigiAiAskInput["actor"]) : undefined;
   const draft = body.draft && typeof body.draft === "object" ? (body.draft as DigiAiAskInput["draft"]) : undefined;
+  const constraints = parseConstraints(body.constraints);
   return {
     message: body.message,
     mode: isDigiAiMode(body.mode) ? body.mode : undefined,
+    capability: isCapabilityId(body.capability) ? body.capability : undefined,
+    constraints,
     sources,
     entity,
     suppliedContext: supplied,
@@ -57,9 +73,23 @@ function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): Di
   };
 }
 
+function parseConstraints(raw: unknown): AskConstraints | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const body = raw as Record<string, unknown>;
+  if (body.privacyClass !== undefined && !isPrivacyClass(body.privacyClass)) {
+    throw new DigiAiError(400, "invalid_request", "Unknown privacy class.");
+  }
+  return {
+    structuredOutput: body.structuredOutput === true,
+    privacyClass: isPrivacyClass(body.privacyClass) ? body.privacyClass : undefined,
+    maxLatency: typeof body.maxLatency === "string" ? body.maxLatency : undefined,
+  };
+}
+
 function parseTwinBriefBody(raw: unknown): TwinBriefInput {
   if (!raw || typeof raw !== "object") throw new DigiAiError(400, "invalid_request", "JSON body is required.");
   const body = raw as Record<string, unknown>;
+  rejectClientRouteOverride(body);
   const entity = body.entity && typeof body.entity === "object" ? (body.entity as TwinBriefInput["entity"]) : undefined;
   const ownerContext =
     body.ownerContext && typeof body.ownerContext === "object"
@@ -87,11 +117,7 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
   };
   const resolver = options.resolver ?? createTrustIdResolver(config);
 
-  app.get("/health", async (): Promise<HealthResponse> => ({
-    ok: true,
-    service: "digi-ai",
-    provider: providerHealth(provider),
-  }));
+  app.get("/health", async (): Promise<HealthResponse> => buildHealthResponse(config, provider));
 
   app.get("/", async (_req, reply) => {
     reply.header("x-content-type-options", "nosniff");
@@ -119,7 +145,13 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         body,
         requestId,
       });
-      const status = result.ok ? 200 : result.error === "provider_unavailable" ? 503 : 502;
+      const status = result.ok
+        ? 200
+        : result.error === "unsupported_capability"
+          ? 400
+          : result.error === "provider_unavailable"
+            ? 503
+            : 502;
       return reply.code(status).send(result);
     } catch (err) {
       if (err instanceof DigiAiError) {

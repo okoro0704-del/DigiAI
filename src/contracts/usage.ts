@@ -1,3 +1,14 @@
+export type NativeUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cachedTokens?: number;
+  imageCount?: number;
+  audioSeconds?: number;
+  videoSeconds?: number;
+  [key: string]: number | undefined;
+};
+
 export type UsageRecord = {
   usageId: string;
   requestId: string;
@@ -6,13 +17,27 @@ export type UsageRecord = {
   callerId: string;
   entitySlug?: string;
   tenantId?: string;
+  applicationId?: string;
+  capability?: string;
   provider: string;
+  providerId?: string;
   model?: string;
+  modelId?: string;
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  nativeUsage?: NativeUsage;
+  providerRequestId?: string;
+  estimatedProviderCost?: number | null;
+  actualProviderCost?: number | null;
+  /** Phase 2A is unpriced. Never a fake credit balance. */
+  digiAiUnits: null;
+  errorClass?: string;
+  startedAt?: string;
+  completedAt?: string;
   latencyMs: number;
   success: boolean;
+  status?: "completed" | "failed" | "provider_unavailable" | "unsupported_capability";
   createdAt: string;
 };
 
@@ -28,7 +53,9 @@ export type RequestReceipt = {
   sourcesAccessed: string[];
   provider?: string;
   model?: string;
-  resultStatus: "completed" | "failed" | "unauthorized" | "provider_unavailable" | "source_unavailable";
+  capability?: string;
+  routeExplanation?: string;
+  resultStatus: "completed" | "failed" | "unauthorized" | "provider_unavailable" | "source_unavailable" | "unsupported_capability";
   usageId?: string;
   createdAt: string;
 };

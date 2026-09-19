@@ -1,0 +1,59 @@
+import type { AppConfig } from "../config.js";
+import { CAPABILITY_IDS } from "../contracts/capabilities.js";
+import type { HealthResponse, CapabilityHealth, ProviderHealthRow } from "../contracts/response.js";
+import { defaultPrivacyClass } from "../contracts/privacy.js";
+import { getCapability } from "../capabilities/catalog.js";
+import type { IntelligenceProvider } from "../providers/types.js";
+import { providerHealth } from "../providers/router.js";
+import { decideRoute } from "./policy.js";
+import { buildRuntimeRegistry } from "./runtime.js";
+
+export function buildHealthResponse(config: AppConfig, provider: IntelligenceProvider): HealthResponse {
+  const registry = buildRuntimeRegistry(config, provider);
+  const privacy = defaultPrivacyClass();
+  const providers: Record<string, ProviderHealthRow> = {};
+  for (const row of registry.providers) {
+    providers[row.catalog.id] = {
+      configured: row.configured,
+      credentialPresent: row.credentialPresent,
+      capabilities: [...row.catalog.capabilities],
+      runtimeStatus: !row.enabled
+        ? "disabled"
+        : row.configured
+          ? "configured"
+          : row.credentialPresent
+            ? "unavailable"
+            : "unconfigured",
+      deploymentType: row.catalog.deploymentType,
+      usageReporting: row.catalog.usageReporting,
+    };
+  }
+
+  const capabilities: Record<string, CapabilityHealth> = {};
+  for (const id of CAPABILITY_IDS) {
+    const supported = registry.models.some((model) => model.capabilities.includes(id) && model.status === "enabled");
+    const decision = decideRoute({
+      capability: id,
+      privacyClass: getCapability(id).privacyEligible.includes(privacy) ? privacy : (getCapability(id).privacyEligible[0] ?? privacy),
+      providers: registry.providers,
+      models: registry.models,
+      defaultModel: config.defaultModels[id] || config.aiModel,
+    });
+    const configured = decision.ok;
+    capabilities[id] = {
+      supported,
+      configured,
+      runtimeVerified: false,
+      status: !supported ? "unsupported" : configured ? "configured" : "unconfigured",
+    };
+  }
+
+  return {
+    ok: true,
+    service: "digi-ai",
+    status: "partial",
+    provider: providerHealth(provider),
+    providers,
+    capabilities,
+  };
+}
