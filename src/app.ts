@@ -3,8 +3,9 @@ import type { AppConfig } from "./config.js";
 import { isCapabilityId } from "./contracts/capabilities.js";
 import { isPrivacyClass } from "./contracts/privacy.js";
 import { CONTEXT_SOURCES, isContextSourceId, isDigiAiMode, type AskConstraints, type DigiAiAskInput } from "./contracts/request.js";
-import { isImageOperation, isImageSourceType, isSizeClass, type ImageInputReference } from "./contracts/media.js";
-import { persistDriveAcceptanceFixture } from "./media/acceptance.js";
+import { isAudioOutputFormat, isAudioSourceType, isImageOperation, isImageSourceType, isSizeClass, isSpeechOperation, type AudioInputReference, type ImageInputReference } from "./contracts/media.js";
+import { isSpeechTask } from "./contracts/speech.js";
+import { persistAudioAcceptanceFixture, persistDriveAcceptanceFixture } from "./media/acceptance.js";
 import { authenticateCaller } from "./identity/resolve.js";
 import { createDrive } from "./media/factory.js";
 import type { SovereignDrive } from "./media/drive.js";
@@ -54,7 +55,17 @@ function rejectClientRouteOverride(body: Record<string, unknown>) {
     "modelId" in body ||
     "failoverTo" in body ||
     "forceProvider" in body ||
-    "preferredProvider" in body
+    "preferredProvider" in body ||
+    "voice" in body ||
+    "voiceId" in body ||
+    "providerVoiceId" in body ||
+    "openaiVoice" in body ||
+    "cloneVoice" in body ||
+    "voiceClone" in body ||
+    "voiceprint" in body ||
+    "voiceMatch" in body ||
+    "biometricVoice" in body ||
+    "cloneFromAudio" in body
   ) {
     throw new DigiAiError(400, "invalid_request", "Provider and model selection is reserved to Digi AI.");
   }
@@ -91,7 +102,7 @@ function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): Di
   const actor = body.actor && typeof body.actor === "object" ? (body.actor as DigiAiAskInput["actor"]) : undefined;
   const draft = body.draft && typeof body.draft === "object" ? (body.draft as DigiAiAskInput["draft"]) : undefined;
   const constraints = parseConstraints(body.constraints);
-  if (body.operation !== undefined && !isImageOperation(body.operation)) {
+  if (body.operation !== undefined && !isImageOperation(body.operation) && !isSpeechOperation(body.operation)) {
     throw new DigiAiError(400, "invalid_request", "Unknown media operation.");
   }
   return {
@@ -105,8 +116,9 @@ function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): Di
     draft,
     correlationId: typeof body.correlationId === "string" ? body.correlationId : undefined,
     idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : undefined,
-    operation: isImageOperation(body.operation) ? body.operation : undefined,
+    operation: isImageOperation(body.operation) || isSpeechOperation(body.operation) ? body.operation : undefined,
     images: parseImages(body.images ?? body.media),
+    audio: parseAudio(body.audio),
     actor,
   };
 }
@@ -120,6 +132,17 @@ function parseConstraints(raw: unknown): AskConstraints | undefined {
   if (body.failoverTo !== undefined || body.preferredProvider !== undefined) {
     throw new DigiAiError(400, "invalid_request", "Provider selection is reserved to Digi AI.");
   }
+  if (
+    body.voice !== undefined ||
+    body.voiceId !== undefined ||
+    body.providerVoiceId !== undefined ||
+    body.cloneVoice !== undefined ||
+    body.voiceprint !== undefined ||
+    body.voiceMatch !== undefined ||
+    body.biometricVoice !== undefined
+  ) {
+    throw new DigiAiError(400, "invalid_request", "Provider voice identifiers are reserved to Digi AI.");
+  }
   return {
     structuredOutput: body.structuredOutput === true,
     privacyClass: isPrivacyClass(body.privacyClass) ? body.privacyClass : undefined,
@@ -132,6 +155,12 @@ function parseConstraints(raw: unknown): AskConstraints | undefined {
     outputFormat: body.outputFormat === "png" || body.outputFormat === "jpeg" || body.outputFormat === "webp" ? body.outputFormat : undefined,
     count: typeof body.count === "number" ? body.count : undefined,
     persistCanonical: body.persistCanonical === true,
+    voiceProfileId: typeof body.voiceProfileId === "string" ? body.voiceProfileId : undefined,
+    language: typeof body.language === "string" ? body.language : undefined,
+    speechTask: isSpeechTask(body.speechTask) ? body.speechTask : undefined,
+    timestamps: body.timestamps === true,
+    speakingRate: typeof body.speakingRate === "number" ? body.speakingRate : undefined,
+    audioOutputFormat: isAudioOutputFormat(body.audioOutputFormat) ? body.audioOutputFormat : undefined,
   };
 }
 
@@ -157,6 +186,31 @@ function parseImages(raw: unknown): ImageInputReference[] | undefined {
       accessPolicy: typeof image.accessPolicy === "string" ? image.accessPolicy : undefined,
       filename: typeof image.filename === "string" ? image.filename : undefined,
       dataBase64: typeof image.dataBase64 === "string" ? image.dataBase64 : undefined,
+    };
+  });
+}
+
+function parseAudio(raw: unknown): AudioInputReference[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) throw new DigiAiError(400, "invalid_audio", "audio must be an array.");
+  return raw.map((row) => {
+    if (!row || typeof row !== "object") throw new DigiAiError(400, "invalid_audio", "Each audio item must be an object.");
+    const item = row as Record<string, unknown>;
+    if (!isAudioSourceType(item.sourceType)) {
+      throw new DigiAiError(400, "invalid_audio", "Unknown audio source type.");
+    }
+    return {
+      sourceType: item.sourceType,
+      assetId: typeof item.assetId === "string" ? item.assetId : undefined,
+      reference: typeof item.reference === "string" ? item.reference : undefined,
+      mediaType: "audio",
+      mimeType: typeof item.mimeType === "string" ? item.mimeType : undefined,
+      durationSeconds: typeof item.durationSeconds === "number" ? item.durationSeconds : undefined,
+      byteSize: typeof item.byteSize === "number" ? item.byteSize : undefined,
+      provenance: typeof item.provenance === "string" ? item.provenance : undefined,
+      accessPolicy: typeof item.accessPolicy === "string" ? item.accessPolicy : undefined,
+      filename: typeof item.filename === "string" ? item.filename : undefined,
+      dataBase64: typeof item.dataBase64 === "string" ? item.dataBase64 : undefined,
     };
   });
 }
@@ -376,6 +430,29 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         service: "digi-ai",
         note: "DRIVE BRIDGE ACCEPTANCE. Not real AI image generation.",
         ...result,
+      });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/media/audio-acceptance", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const caller = authenticateCaller(config, req.headers);
+      if (!caller) throw new DigiAiError(401, "unauthenticated_caller", "Caller identity is required.");
+      if (config.isProd && !isOperatorCaller(config, caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for audio Drive acceptance.");
+      }
+      const result = await persistAudioAcceptanceFixture({
+        drive: deps.drive,
+        actorTrustId: caller.id,
+        callerId: caller.id,
+        tenantId: config.sovereignDriveAcceptanceTenant,
+      });
+      return reply.code(result.ok ? 200 : 502).send({
+        service: "digi-ai",
+        ...result,
+        note: "AUDIO DRIVE ACCEPTANCE. Safe fixture through Digi AI media persistence. Not real TTS provider acceptance.",
       });
     } catch (err) {
       return sendError(reply, err);

@@ -5,11 +5,12 @@ export type PricingDimensionKind =
   | "image"
   | "audio_seconds"
   | "video_seconds"
-  | "generated_seconds";
+  | "generated_seconds"
+  | "characters";
 
 export type PricingDimension = {
   kind: PricingDimensionKind;
-  unit: "token" | "image" | "second";
+  unit: "token" | "image" | "second" | "character";
   perMillion?: number;
   perUnit?: number;
 };
@@ -75,6 +76,24 @@ export const PRICING_CATALOG: PricingRecord[] = [
     currency: "USD",
     status: "active",
     dimensions: [{ kind: "image", unit: "image", perUnit: 0.04 }],
+  },
+  {
+    providerId: "openai",
+    modelId: "whisper-1",
+    pricingVersion: "openai-whisper-1-2026-09-01",
+    effectiveFrom: "2026-09-01T00:00:00.000Z",
+    currency: "USD",
+    status: "active",
+    dimensions: [{ kind: "audio_seconds", unit: "second", perUnit: 0.0001 }],
+  },
+  {
+    providerId: "openai",
+    modelId: "tts-1",
+    pricingVersion: "openai-tts-1-2026-09-01",
+    effectiveFrom: "2026-09-01T00:00:00.000Z",
+    currency: "USD",
+    status: "active",
+    dimensions: [{ kind: "characters", unit: "character", perMillion: 15 }],
   },
   {
     providerId: "gemini",

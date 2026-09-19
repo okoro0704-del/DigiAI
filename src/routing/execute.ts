@@ -62,8 +62,9 @@ export async function executeWithFailover(input: {
   if (input.forceProvider) {
     ordered = ordered.filter((row) => row.providerId === input.forceProvider);
   }
-  const allowFailover = input.capability === "IMAGE" ? false : input.allowFailover;
-  const maxAttempts = input.capability === "IMAGE" ? 1 : Math.max(1, input.config.maxProviderAttempts);
+  const singleShot = input.capability === "IMAGE" || input.capability === "SPEECH_TO_TEXT" || input.capability === "TEXT_TO_SPEECH";
+  const allowFailover = singleShot ? false : input.allowFailover;
+  const maxAttempts = singleShot ? 1 : Math.max(1, input.config.maxProviderAttempts);
   const attempts: RouteAttempt[] = [];
   let explanation = decision.explanation;
 

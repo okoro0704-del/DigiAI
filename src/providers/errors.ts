@@ -14,6 +14,9 @@ export function classifyProviderHttpError(
   if (marker.includes("invalid image") || marker.includes("could not decode") || marker.includes("unsupported image")) {
     return { error: "invalid_media", detail: "The provider rejected the image as invalid." };
   }
+  if (marker.includes("invalid_audio") || marker.includes("could not decode audio") || marker.includes("unsupported audio") || marker.includes("audio file")) {
+    return { error: "invalid_audio", detail: "The provider rejected the audio as invalid." };
+  }
   if (status === 429 || marker.includes("rate_limit")) {
     return { error: "rate_limited", detail: "AI reasoning is temporarily rate limited." };
   }

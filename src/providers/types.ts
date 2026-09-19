@@ -8,6 +8,11 @@ export type ProviderUsage = {
   imageWidth?: number;
   imageHeight?: number;
   imageBytes?: number;
+  audioSeconds?: number;
+  generatedSeconds?: number;
+  characterCount?: number;
+  inputBytes?: number;
+  outputBytes?: number;
 };
 
 export type ProviderMediaOutput = {
@@ -15,6 +20,7 @@ export type ProviderMediaOutput = {
   width?: number;
   height?: number;
   byteSize?: number;
+  durationSeconds?: number;
   contentBase64?: string;
   providerTempUrl?: string;
   expiresAt?: string;
@@ -28,6 +34,8 @@ export type ProviderSuccess = {
   usage: ProviderUsage;
   media?: ProviderMediaOutput[];
   finishReason?: string;
+  language?: string;
+  segments?: Array<{ startSeconds?: number; endSeconds?: number; text: string }>;
   providerRequestId?: string;
   latencyMs: number;
 };
@@ -51,7 +59,14 @@ export type ProviderFailure = {
     | "media_too_large"
     | "media_access_denied"
     | "generation_failed"
-    | "persistence_failed";
+    | "persistence_failed"
+    | "invalid_audio"
+    | "audio_too_large"
+    | "audio_too_long"
+    | "unsupported_codec"
+    | "transcription_failed"
+    | "tts_failed"
+    | "voice_profile_invalid";
   detail: string;
   latencyMs: number;
 };
@@ -76,12 +91,18 @@ export type ProviderInvokeRequest = {
   model?: string;
   structuredOutput?: boolean;
   capability?: string;
-  operation?: "generate" | "edit" | "analyze";
+  operation?: "generate" | "edit" | "analyze" | "transcribe" | "translate" | "speak" | "converse";
   images?: ProviderImageInput[];
   imageCount?: number;
   size?: string;
-  outputFormat?: "png" | "jpeg" | "webp";
+  outputFormat?: "png" | "jpeg" | "webp" | "mp3" | "wav" | "opus" | "aac";
   transparentBackground?: boolean;
+  audio?: Array<{ mimeType: string; bytes: Buffer; filename?: string }>;
+  language?: string;
+  speechTask?: "transcribe" | "translate";
+  timestamps?: boolean;
+  providerVoiceId?: string;
+  speakingRate?: number;
 };
 
 export interface IntelligenceProvider {

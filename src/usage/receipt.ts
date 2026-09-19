@@ -13,6 +13,11 @@ export function nativeUsageFromTokens(input?: {
   imageWidth?: number;
   imageHeight?: number;
   imageBytes?: number;
+  audioSeconds?: number;
+  generatedSeconds?: number;
+  characterCount?: number;
+  inputBytes?: number;
+  outputBytes?: number;
 }): NativeUsage | undefined {
   if (!input) return undefined;
   const native: NativeUsage = {};
@@ -25,6 +30,11 @@ export function nativeUsageFromTokens(input?: {
   if (typeof input.imageWidth === "number") native.imageWidth = input.imageWidth;
   if (typeof input.imageHeight === "number") native.imageHeight = input.imageHeight;
   if (typeof input.imageBytes === "number") native.imageBytes = input.imageBytes;
+  if (typeof input.audioSeconds === "number") native.audioSeconds = input.audioSeconds;
+  if (typeof input.generatedSeconds === "number") native.generatedSeconds = input.generatedSeconds;
+  if (typeof input.characterCount === "number") native.characterCount = input.characterCount;
+  if (typeof input.inputBytes === "number") native.inputBytes = input.inputBytes;
+  if (typeof input.outputBytes === "number") native.outputBytes = input.outputBytes;
   return Object.keys(native).length ? native : undefined;
 }
 

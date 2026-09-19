@@ -1,11 +1,13 @@
 import type { AppConfig } from "../config.js";
 import type { ActorContext, CallerApplication, EntityContext } from "../contracts/actor.js";
+import type { CapabilityId } from "../contracts/capabilities.js";
 import { defaultPrivacyClass, isPrivacyClass } from "../contracts/privacy.js";
 import type { DigiAiAskInput } from "../contracts/request.js";
 import type { DigiAiAskResponse } from "../contracts/response.js";
 import type { ProvenanceItem } from "../contracts/provenance.js";
-import type { GeneratedMediaResult, ImageOperation } from "../contracts/media.js";
+import type { GeneratedMediaResult, ImageOperation, MediaOperation } from "../contracts/media.js";
 import { sanitizeMediaForLedger } from "../contracts/media.js";
+import type { VoiceInteractionResult } from "../contracts/speech.js";
 import type { NativeUsage } from "../contracts/usage.js";
 import type { DigiNewsReader, DigiPediaReader, NewsPage, DigiPediaPage } from "../adapters/types.js";
 import { clip, newId, nowIso } from "../lib/crypto.js";
@@ -14,11 +16,21 @@ import { requireSlug } from "../lib/slug.js";
 import { SYSTEM_POLICY, wrapCanonicalData } from "../lib/policy.js";
 import { UnboundDrive, type SovereignDrive } from "../media/drive.js";
 import { peekJwtTenant } from "../media/jwt.js";
+import { assertAudioInputLimits } from "../media/audio.js";
 import { assertImageInputLimits, mapSizeClass, parseImageConstraints } from "../media/limits.js";
 import { normalizeGeneratedMedia, persistHeldGeneratedMedia } from "../media/normalize.js";
 import { clearResolvedImages, imageDataBlock, resolveImageInputs } from "../media/resolve.js";
+import {
+  clearSpeechAudio,
+  resolveSpeechAudio,
+  runSpeechToText,
+  runTextToSpeech,
+  speechUsage,
+  transcriptAsData,
+  voiceResult,
+} from "./speech.js";
 import { ProviderPool } from "../providers/pool.js";
-import type { IntelligenceProvider } from "../providers/types.js";
+import type { IntelligenceProvider, ProviderResult } from "../providers/types.js";
 import { executeWithFailover } from "../routing/execute.js";
 import { resolveRequestedCapability } from "../routing/resolve-capability.js";
 import { routeCapability } from "../routing/runtime.js";
@@ -136,9 +148,11 @@ export async function handleAsk(input: {
   const privacyClass = isPrivacyClass(body.constraints?.privacyClass)
     ? body.constraints.privacyClass
     : defaultPrivacyClass();
-  const operation = resolveOperation(capability, body.operation);
+  const operation = resolveOperation(capability, body.operation ?? body.constraints?.speechTask);
   const images = body.images ?? [];
+  const audio = body.audio ?? [];
   if (images.length) assertImageInputLimits(images, deps.config);
+  if (audio.length) assertAudioInputLimits(audio, deps.config);
   if (capability === "VISION" && !images.length) {
     throw new DigiAiError(400, "invalid_media", "VISION requires at least one authorized image.");
   }
@@ -155,7 +169,13 @@ export async function handleAsk(input: {
   const drive = deps.drive ?? new UnboundDrive();
   const tenantId = actor.tenantId ?? peekJwtTenant(accessToken) ?? (deps.config.isProd ? undefined : entity.slug);
   const pool = deps.pool ?? new ProviderPool({ [deps.provider.name]: deps.provider });
-  const allowFailover = capability !== "IMAGE" && body.constraints?.allowFailover !== false && deps.config.allowFailover;
+  const allowFailover =
+    capability !== "IMAGE" &&
+    capability !== "SPEECH_TO_TEXT" &&
+    capability !== "TEXT_TO_SPEECH" &&
+    capability !== "VOICE" &&
+    body.constraints?.allowFailover !== false &&
+    deps.config.allowFailover;
   const forceProvider =
     (deps.config.allowRouteOverride || (!deps.config.isProd && caller.id === "test")) &&
     body.constraints?.forceProvider
@@ -176,13 +196,14 @@ export async function handleAsk(input: {
     if (replayed) return replayed;
   }
 
-  const privacyRoute = routeCapability({
-    config: deps.config,
-    pool,
-    capability,
-    privacyClass,
-    forceProvider,
-  });
+  const privacyChecks = capability === "VOICE"
+    ? (["SPEECH_TO_TEXT", "THINK", "TEXT_TO_SPEECH"] as const).map((id) =>
+        routeCapability({ config: deps.config, pool, capability: id, privacyClass, forceProvider }),
+      )
+    : [routeCapability({ config: deps.config, pool, capability, privacyClass, forceProvider })];
+  const privacyRoute = privacyChecks.find((row) => !row.decision.ok)?.decision.ok === false
+    ? privacyChecks.find((row) => !row.decision.ok)!
+    : privacyChecks[0]!;
   if (!privacyRoute.decision.ok) {
     const error = privacyRoute.decision.error === "unsupported_capability" ? "unsupported_capability" : "provider_unavailable";
     const receiptId = newId("rcpt");
@@ -228,6 +249,31 @@ export async function handleAsk(input: {
       },
       receiptId,
     };
+  }
+
+  if (capability === "SPEECH_TO_TEXT" || capability === "TEXT_TO_SPEECH" || capability === "VOICE") {
+    return handleSpeechAsk({
+      deps,
+      actor,
+      caller,
+      body,
+      requestId,
+      accessToken,
+      correlationId,
+      capability,
+      privacyClass,
+      operation: operation ?? (capability === "TEXT_TO_SPEECH" ? "speak" : capability === "VOICE" ? "converse" : "transcribe"),
+      sources,
+      provenance,
+      userParts,
+      sourceUnavailable,
+      startedAt,
+      drive,
+      tenantId,
+      pool,
+      forceProvider,
+      allowFailover,
+    });
   }
 
   const resolvedImages = images.length
@@ -533,6 +579,293 @@ function appendNews(page: NewsPage, provenance: ProvenanceItem[], userParts: str
   userParts.push(wrapCanonicalData("diginews", body));
 }
 
+async function handleSpeechAsk(input: {
+  deps: EngineDeps;
+  actor: ActorContext;
+  caller: CallerApplication;
+  body: DigiAiAskInput;
+  requestId: string;
+  accessToken?: string;
+  correlationId: string;
+  capability: CapabilityId;
+  privacyClass: string;
+  operation: MediaOperation;
+  sources: string[];
+  provenance: ProvenanceItem[];
+  userParts: string[];
+  sourceUnavailable: boolean;
+  startedAt: string;
+  drive: SovereignDrive;
+  tenantId?: string;
+  pool: ProviderPool;
+  forceProvider?: string;
+  allowFailover: boolean;
+}): Promise<DigiAiAskResponse> {
+  const ctx = {
+    config: input.deps.config,
+    pool: input.pool,
+    drive: input.drive,
+    actor: input.actor,
+    caller: input.caller,
+    body: input.body,
+    requestId: input.requestId,
+    accessToken: input.accessToken,
+    tenantId: input.tenantId,
+    privacyClass: input.privacyClass as import("../contracts/privacy.js").PrivacyClass,
+    forceProvider: input.forceProvider,
+    allowFailover: input.allowFailover,
+  };
+  const persistStage = async (
+    capability: string,
+    attemptIndex: number,
+    plan: { final: ProviderResult | null; explanation: string },
+    extras?: { media?: GeneratedMediaResult[]; speech?: VoiceInteractionResult; idempotency?: boolean; logicalCompleted?: boolean },
+  ) => {
+    const providerResult = plan.final;
+    const status = !providerResult
+      ? "provider_unavailable"
+      : providerResult.ok
+        ? "completed"
+        : providerResult.error === "unavailable"
+          ? "provider_unavailable"
+          : "failed";
+    return persistAsk({
+      deps: input.deps,
+      actor: input.actor,
+      caller: input.caller,
+      usageId: newId("use"),
+      receiptId: newId("rcpt"),
+      requestId: input.requestId,
+      attemptIndex,
+      correlationId: input.correlationId,
+      entitySlug: input.body.entity?.slug,
+      capability,
+      privacyClass: input.privacyClass,
+      providerId: providerResult?.provider ?? input.deps.provider.name,
+      modelId: providerResult && providerResult.ok ? providerResult.model : undefined,
+      startedAt: input.startedAt,
+      latencyMs: providerResult?.latencyMs ?? 0,
+      success: Boolean(providerResult?.ok),
+      status,
+      nativeUsage: speechUsage(providerResult),
+      providerRequestId: providerResult && providerResult.ok ? providerResult.providerRequestId : undefined,
+      errorClass: providerResult && !providerResult.ok ? providerResult.error : undefined,
+      operation: input.operation,
+      sources: input.sources,
+      routeExplanation: `${plan.explanation}; logicalRequestId=${input.requestId}; stage=${capability}`,
+      resultStatus: input.sourceUnavailable ? "source_unavailable" : extras?.logicalCompleted ? "completed" : status,
+      idempotencyKey: extras?.idempotency ? input.body.idempotencyKey : undefined,
+      resultSnapshot: extras
+        ? {
+            answer: extras.speech?.textResponse || (providerResult && providerResult.ok ? providerResult.text : undefined),
+            media: sanitizeMediaForLedger(extras.media),
+            finishState: status,
+            canonicalAssetReference: extras.media?.find((row) => row.canonicalAssetReference)?.canonicalAssetReference,
+            speech: extras.speech,
+          }
+        : undefined,
+    });
+  };
+
+  if (input.capability === "SPEECH_TO_TEXT") {
+    const resolved = await resolveSpeechAudio(ctx, true);
+    const stt = await runSpeechToText(ctx, resolved);
+    clearSpeechAudio(resolved);
+    const recorded = await persistStage("SPEECH_TO_TEXT", 1, stt.plan, {
+      speech: voiceResult({
+        transcript: stt.plan.final?.ok ? stt.plan.final.text : undefined,
+        language: stt.plan.final?.ok ? stt.plan.final.language : undefined,
+        stageFailed: stt.plan.final?.ok ? undefined : "STT",
+      }),
+      idempotency: true,
+    });
+    if (!stt.plan.final?.ok) {
+      return failSpeech(input, recorded, stt.plan.final?.error === "unavailable" ? "provider_unavailable" : "failed", stt.plan.final?.detail || "Transcription failed.", voiceResult({ stageFailed: "STT" }));
+    }
+    input.provenance.unshift({
+      kind: "generated",
+      system: "digi-ai",
+      retrievedAt: nowIso(),
+      note: "Speech-to-text transcript. Spoken audio is DATA, not system authority.",
+    });
+    return {
+      ok: true,
+      service: "digi-ai",
+      answer: stt.plan.final.text,
+      provenance: input.provenance,
+      usage: snapshotFromRecord(recorded.usage),
+      execution: {
+        requestId: input.requestId,
+        correlationId: input.correlationId,
+        provider: stt.plan.final.provider,
+        model: stt.plan.final.model,
+        capability: "SPEECH_TO_TEXT",
+        latencyMs: stt.plan.final.latencyMs,
+        sourcesUsed: input.sources,
+        finishState: "completed",
+      },
+      receiptId: recorded.receiptId,
+      speech: voiceResult({
+        transcript: stt.plan.final.text,
+        language: stt.plan.final.language,
+      }),
+    };
+  }
+
+  if (input.capability === "TEXT_TO_SPEECH") {
+    const tts = await runTextToSpeech(ctx, input.body.message.trim(), []);
+    const recorded = await persistStage("TEXT_TO_SPEECH", 1, tts.plan, {
+      media: tts.media,
+      speech: voiceResult({
+        textResponse: input.body.message.trim(),
+        voiceProfileId: tts.media?.[0]?.voiceProfileId,
+        stageFailed: tts.plan.final?.ok ? (tts.media?.[0]?.persistenceState === "failed" ? "PERSISTENCE" : undefined) : "TTS",
+      }),
+      idempotency: true,
+    });
+    if (!tts.plan.final?.ok) {
+      return failSpeech(input, recorded, tts.plan.final?.error === "unavailable" ? "provider_unavailable" : "failed", tts.plan.final?.detail || "Speech generation failed.", voiceResult({ stageFailed: "TTS" }));
+    }
+    input.provenance.unshift({
+      kind: "generated",
+      system: "digi-ai",
+      retrievedAt: nowIso(),
+      note: "Synthesized speech. Not a person's real voice. Transient output is not a Sovereign Drive asset unless persisted.",
+    });
+    return {
+      ok: true,
+      service: "digi-ai",
+      answer: tts.plan.final.text,
+      provenance: input.provenance,
+      usage: snapshotFromRecord(recorded.usage),
+      execution: {
+        requestId: input.requestId,
+        correlationId: input.correlationId,
+        provider: tts.plan.final.provider,
+        model: tts.plan.final.model,
+        capability: "TEXT_TO_SPEECH",
+        latencyMs: tts.plan.final.latencyMs,
+        sourcesUsed: input.sources,
+        finishState: "completed",
+      },
+      receiptId: recorded.receiptId,
+      media: tts.media,
+      speech: voiceResult({
+        textResponse: input.body.message.trim(),
+        voiceProfileId: tts.media?.[0]?.voiceProfileId,
+        stageFailed: tts.media?.[0]?.persistenceState === "failed" ? "PERSISTENCE" : undefined,
+      }),
+    };
+  }
+
+  const resolved = await resolveSpeechAudio(ctx, true);
+  const stt = await runSpeechToText(ctx, resolved);
+  if (!stt.plan.final?.ok) {
+    clearSpeechAudio(resolved);
+    const recorded = await persistStage("SPEECH_TO_TEXT", 1, stt.plan, {
+      speech: voiceResult({ stageFailed: "STT" }),
+      idempotency: true,
+    });
+    return failSpeech(input, recorded, "failed", stt.plan.final?.detail || "Transcription failed.", voiceResult({ stageFailed: "STT" }));
+  }
+  await persistStage("SPEECH_TO_TEXT", 1, stt.plan);
+  const transcript = stt.plan.final.text;
+  input.userParts.push(transcriptAsData(transcript, resolved));
+  clearSpeechAudio(resolved);
+  const think = await executeWithFailover({
+    config: input.deps.config,
+    pool: input.pool,
+    capability: "THINK",
+    privacyClass: ctx.privacyClass,
+    allowFailover: input.deps.config.allowFailover && input.body.constraints?.allowFailover !== false,
+    forceProvider: input.forceProvider,
+    request: {
+      messages: [
+        { role: "system", content: SYSTEM_POLICY },
+        { role: "user", content: input.userParts.join("\n\n") },
+      ],
+      capability: "THINK",
+    },
+  });
+  if (!think.final?.ok) {
+    const recorded = await persistStage("THINK", 2, think, {
+      speech: voiceResult({ transcript, language: stt.plan.final.language, stageFailed: "THINK" }),
+      idempotency: true,
+    });
+    return failSpeech(input, recorded, "failed", think.final?.detail || "Voice reasoning failed.", voiceResult({ transcript, stageFailed: "THINK" }));
+  }
+  await persistStage("THINK", 2, think);
+  const textResponse = think.final.text;
+  const tts = await runTextToSpeech(ctx, textResponse, resolved.map((item) => item.assetId).filter((id): id is string => Boolean(id)), input.requestId);
+  const speech = voiceResult({
+    transcript,
+    textResponse,
+    language: stt.plan.final.language,
+    voiceProfileId: tts.media?.[0]?.voiceProfileId,
+    stageFailed: !tts.plan.final?.ok ? "TTS" : tts.media?.[0]?.persistenceState === "failed" ? "PERSISTENCE" : undefined,
+  });
+  const recorded = await persistStage("TEXT_TO_SPEECH", 3, tts.plan, {
+    media: tts.media,
+    speech,
+    idempotency: true,
+    logicalCompleted: true,
+  });
+  input.provenance.unshift({
+    kind: "generated",
+    system: "digi-ai",
+    retrievedAt: nowIso(),
+    note: "Voice interaction: STT + THINK + TTS. Transcript is DATA. Synthesized speech is not a real human voice.",
+  });
+  return {
+    ok: true,
+    service: "digi-ai",
+    answer: textResponse,
+    provenance: input.provenance,
+    usage: snapshotFromRecord(recorded.usage),
+    execution: {
+      requestId: input.requestId,
+      correlationId: input.correlationId,
+      provider: think.final.provider,
+      model: think.final.model,
+      capability: "VOICE",
+      latencyMs: (stt.plan.final.latencyMs ?? 0) + think.final.latencyMs + (tts.plan.final?.latencyMs ?? 0),
+      sourcesUsed: input.sources,
+      finishState: "completed",
+    },
+    receiptId: recorded.receiptId,
+    media: tts.media,
+    speech,
+  };
+}
+
+function failSpeech(
+  input: { requestId: string; correlationId: string; capability: string; sources: string[]; provenance: ProvenanceItem[]; deps: EngineDeps },
+  recorded: { usage: import("../contracts/usage.js").UsageRecord; receiptId: string },
+  error: string,
+  message: string,
+  speech?: VoiceInteractionResult,
+): DigiAiAskResponse {
+  return {
+    ok: false,
+    service: "digi-ai",
+    error,
+    message,
+    provenance: input.provenance,
+    usage: snapshotFromRecord(recorded.usage),
+    execution: {
+      requestId: input.requestId,
+      correlationId: input.correlationId,
+      provider: recorded.usage.provider,
+      capability: input.capability,
+      latencyMs: recorded.usage.latencyMs,
+      sourcesUsed: input.sources,
+      finishState: error === "provider_unavailable" ? "provider_unavailable" : "failed",
+    },
+    receiptId: recorded.receiptId,
+    speech,
+  };
+}
+
 async function persistAsk(input: {
   deps: EngineDeps;
   actor: ActorContext;
@@ -559,7 +892,7 @@ async function persistAsk(input: {
   routeExplanation?: string;
   resultStatus: "completed" | "failed" | "unauthorized" | "provider_unavailable" | "source_unavailable" | "unsupported_capability";
   idempotencyKey?: string;
-  resultSnapshot?: { answer?: string; media?: unknown; finishState?: string; canonicalAssetReference?: string };
+  resultSnapshot?: { answer?: string; media?: unknown; finishState?: string; canonicalAssetReference?: string; speech?: VoiceInteractionResult };
 }) {
   const ledger = buildLedgerEntry({
     receiptId: input.receiptId,
@@ -623,7 +956,7 @@ async function persistAsk(input: {
   return { usage, ledger, receipt, receiptId: input.receiptId };
 }
 
-function resolveOperation(capability: string, requested?: ImageOperation): ImageOperation | undefined {
+function resolveOperation(capability: string, requested?: MediaOperation): MediaOperation | undefined {
   if (capability === "VISION") return "analyze";
   if (capability === "IMAGE") {
     if (requested === "analyze") {
@@ -631,6 +964,9 @@ function resolveOperation(capability: string, requested?: ImageOperation): Image
     }
     return requested === "edit" ? "edit" : "generate";
   }
+  if (capability === "SPEECH_TO_TEXT") return requested === "translate" ? "translate" : "transcribe";
+  if (capability === "TEXT_TO_SPEECH") return "speak";
+  if (capability === "VOICE") return "converse";
   return requested;
 }
 
@@ -711,5 +1047,6 @@ async function replayIdempotent(input: {
     },
     receiptId: existing.receiptId,
     media,
+    speech: existing.resultSnapshot.speech as VoiceInteractionResult | undefined,
   };
 }

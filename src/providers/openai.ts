@@ -28,6 +28,8 @@ export class OpenAiProvider implements IntelligenceProvider {
     if (request.capability === "IMAGE") {
       return request.operation === "edit" ? this.editImage(request) : this.generateImage(request);
     }
+    if (request.capability === "SPEECH_TO_TEXT") return this.transcribe(request);
+    if (request.capability === "TEXT_TO_SPEECH") return this.speak(request);
     return this.chat(request);
   }
 
@@ -177,6 +179,129 @@ export class OpenAiProvider implements IntelligenceProvider {
     };
   }
 
+  private async transcribe(request: ProviderInvokeRequest): Promise<ProviderResult> {
+    const started = Date.now();
+    const model = request.model ?? "whisper-1";
+    const audio = request.audio?.[0];
+    if (!audio?.bytes.length) {
+      return { ok: false, provider: this.name, model, error: "invalid_audio", detail: "SPEECH_TO_TEXT requires authorized audio.", latencyMs: 0 };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const form = new FormData();
+      form.set("file", new Blob([new Uint8Array(audio.bytes)], { type: audio.mimeType }), audio.filename || "audio.wav");
+      form.set("model", model);
+      form.set("response_format", request.timestamps ? "verbose_json" : "json");
+      if (request.language && request.speechTask !== "translate") form.set("language", request.language);
+      const endpoint =
+        request.speechTask === "translate"
+          ? "https://api.openai.com/v1/audio/translations"
+          : "https://api.openai.com/v1/audio/transcriptions";
+      const res = await fetch(endpoint, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { authorization: `Bearer ${this.apiKey}` },
+        body: form,
+      });
+      const latencyMs = Date.now() - started;
+      if (!res.ok) return this.fail(model, res, latencyMs);
+      const raw = (await res.json()) as {
+        text?: string;
+        language?: string;
+        duration?: number;
+        segments?: Array<{ start?: number; end?: number; text?: string }>;
+      };
+      const text = raw.text?.trim();
+      if (!text) {
+        return { ok: false, provider: this.name, model, error: "transcription_failed", detail: "The provider did not return a transcript.", latencyMs };
+      }
+      const duration = typeof raw.duration === "number" ? raw.duration : undefined;
+      return {
+        ok: true,
+        provider: this.name,
+        model,
+        text,
+        usage: {
+          audioSeconds: duration,
+          inputBytes: audio.bytes.length,
+        },
+        language: raw.language,
+        segments: raw.segments
+          ?.filter((row) => typeof row.text === "string" && row.text.trim())
+          .map((row) => ({
+            startSeconds: row.start,
+            endSeconds: row.end,
+            text: String(row.text).trim(),
+          })),
+        providerRequestId: res.headers.get("x-request-id") ?? undefined,
+        latencyMs,
+      };
+    } catch (err) {
+      return this.catchError(model, started, err);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async speak(request: ProviderInvokeRequest): Promise<ProviderResult> {
+    const started = Date.now();
+    const model = request.model ?? "tts-1";
+    const text = request.messages.filter((row) => row.role === "user").map((row) => row.content).join("\n\n").trim();
+    if (!text) {
+      return { ok: false, provider: this.name, model, error: "tts_failed", detail: "TEXT_TO_SPEECH requires text to speak.", latencyMs: 0 };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const format = request.outputFormat && request.outputFormat !== "png" && request.outputFormat !== "jpeg" && request.outputFormat !== "webp"
+      ? request.outputFormat
+      : "mp3";
+    try {
+      const res = await fetch("https://api.openai.com/v1/audio/speech", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          authorization: `Bearer ${this.apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          input: text,
+          voice: request.providerVoiceId || "alloy",
+          response_format: format,
+          speed: request.speakingRate ?? 1,
+        }),
+      });
+      const latencyMs = Date.now() - started;
+      if (!res.ok) return this.fail(model, res, latencyMs);
+      const bytes = Buffer.from(await res.arrayBuffer());
+      if (!bytes.length) {
+        return { ok: false, provider: this.name, model, error: "tts_failed", detail: "The provider did not return speech audio.", latencyMs };
+      }
+      return {
+        ok: true,
+        provider: this.name,
+        model,
+        text: "Generated speech audio. This is synthesized speech, not a person's real voice.",
+        media: [{
+          mimeType: audioMime(format),
+          byteSize: bytes.length,
+          contentBase64: bytes.toString("base64"),
+        }],
+        usage: {
+          characterCount: text.length,
+          outputBytes: bytes.length,
+        },
+        providerRequestId: res.headers.get("x-request-id") ?? undefined,
+        latencyMs,
+      };
+    } catch (err) {
+      return this.catchError(model, started, err);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async fail(model: string, res: Response, latencyMs: number): Promise<ProviderResult> {
     const body = (await res.json().catch(() => null)) as { error?: { type?: string; code?: string; message?: string } } | null;
     const classified = classifyProviderHttpError(res.status, body);
@@ -226,6 +351,13 @@ function toMediaOutput(row: { b64_json?: string; url?: string }): ProviderMediaO
 
 function parseSize(media?: ProviderMediaOutput): [number | undefined, number | undefined] {
   return [media?.width, media?.height];
+}
+
+function audioMime(format: string) {
+  if (format === "wav") return "audio/wav";
+  if (format === "opus") return "audio/ogg";
+  if (format === "aac") return "audio/aac";
+  return "audio/mpeg";
 }
 
 function dataUrlToBuffer(dataUrl: string): Buffer {

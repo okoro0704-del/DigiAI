@@ -188,7 +188,7 @@ export function imageDataBlock(images: ResolvedImage[]): string {
   ].join("\n");
 }
 
-function driveError(error: string, detail: string) {
+export function driveError(error: string, detail: string) {
   if (error === "drive_auth_failed") return new DigiAiError(401, "drive_auth_failed", detail);
   if (error === "drive_access_denied" || error === "media_access_denied") return new DigiAiError(403, "media_access_denied", detail);
   if (error === "drive_asset_not_found" || error === "not_found") return new DigiAiError(404, "not_found", detail);

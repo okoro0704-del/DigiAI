@@ -3,6 +3,7 @@ import type { ProvenanceItem } from "./provenance.js";
 import type { NativeUsage } from "./usage.js";
 import type { CapabilityId } from "./capabilities.js";
 import type { GeneratedMediaResult } from "./media.js";
+import type { VoiceInteractionResult } from "./speech.js";
 
 export type DeploymentType = "cloud" | "self_hosted" | "local" | "internal";
 
@@ -63,6 +64,7 @@ export type DigiAiAskSuccess = {
   execution: ExecutionMeta;
   receiptId: string;
   media?: GeneratedMediaResult[];
+  speech?: VoiceInteractionResult;
   objectiveCandidate?: ObjectiveCandidate;
 };
 
@@ -76,6 +78,7 @@ export type DigiAiAskFailure = {
   execution?: ExecutionMeta;
   receiptId?: string;
   media?: GeneratedMediaResult[];
+  speech?: VoiceInteractionResult;
 };
 
 export type DigiAiAskResponse = DigiAiAskSuccess | DigiAiAskFailure;
@@ -121,5 +124,14 @@ export type HealthResponse = {
       available: boolean;
       status: "available" | "unavailable";
     };
+  };
+  audio?: {
+    canonicalPersistence: {
+      available: boolean;
+      status: "available" | "unavailable";
+    };
+  };
+  voiceProfiles?: {
+    configuredCount: number;
   };
 };

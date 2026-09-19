@@ -1,4 +1,4 @@
-import type { GeneratedMediaResult, ImageOperation, PersistenceState } from "../contracts/media.js";
+import type { GeneratedMediaResult, MediaOperation, PersistenceState } from "../contracts/media.js";
 import { sanitizeMediaForLedger } from "../contracts/media.js";
 import { newId, nowIso } from "../lib/crypto.js";
 import type { SovereignDrive } from "./drive.js";
@@ -9,7 +9,7 @@ export async function normalizeGeneratedMedia(input: {
   outputs: ProviderMediaOutput[];
   providerId: string;
   modelId?: string;
-  operation: ImageOperation;
+  operation: MediaOperation;
   actorTrustId: string;
   applicationId: string;
   sourceAssetIds: string[];
@@ -20,6 +20,9 @@ export async function normalizeGeneratedMedia(input: {
   executionRef?: string;
   idempotencyKey?: string;
   maxTransientBytes: number;
+  capability?: GeneratedMediaResult["capability"];
+  voiceProfileId?: string;
+  logicalRequestId?: string;
 }): Promise<GeneratedMediaResult[]> {
   const createdAt = nowIso();
   const results: GeneratedMediaResult[] = [];
@@ -44,11 +47,12 @@ export async function normalizeGeneratedMedia(input: {
     if (input.persistCanonical && output.contentBase64) {
       persistenceState = "persisting";
       const bytes = Buffer.from(output.contentBase64, "base64");
+      const filename = filenameFor(output.mimeType);
       if (input.idempotencyKey) {
         mediaHold.put(holdKey(input.applicationId, input.idempotencyKey), {
           mimeType: output.mimeType,
           bytes,
-          filename: "generated.png",
+          filename,
           width: output.width,
           height: output.height,
         });
@@ -60,9 +64,9 @@ export async function normalizeGeneratedMedia(input: {
         accessToken: input.accessToken,
         mimeType: output.mimeType,
         bytes,
-        filename: "generated.png",
+        filename,
         mediaType: output.mimeType,
-        capability: "IMAGE",
+        capability: input.capability ?? "IMAGE",
         providerId: input.providerId,
         modelId: input.modelId,
         sourceAssetIds: input.sourceAssetIds,
@@ -100,6 +104,7 @@ export async function persistHeldGeneratedMedia(input: {
   modelId?: string;
   sourceAssetIds?: string[];
   executionRef?: string;
+  capability?: string;
 }): Promise<{ persistenceState: PersistenceState; canonicalAssetReference?: string; error?: string }> {
   const key = holdKey(input.callerId, input.idempotencyKey);
   const held = mediaHold.get(key);
@@ -116,9 +121,9 @@ export async function persistHeldGeneratedMedia(input: {
     accessToken: input.accessToken,
     mimeType: held.mimeType,
     bytes: held.bytes,
-    filename: held.filename || "generated.png",
+    filename: held.filename || filenameFor(held.mimeType),
     mediaType: held.mimeType,
-    capability: "IMAGE",
+    capability: input.capability ?? (held.mimeType.startsWith("audio/") ? "TEXT_TO_SPEECH" : "IMAGE"),
     providerId: input.providerId,
     modelId: input.modelId,
     sourceAssetIds: input.sourceAssetIds,
@@ -136,10 +141,13 @@ function mediaResult(
   input: {
     providerId: string;
     modelId?: string;
-    operation: ImageOperation;
+    operation: MediaOperation;
     actorTrustId: string;
     applicationId: string;
     sourceAssetIds: string[];
+    capability?: GeneratedMediaResult["capability"];
+    voiceProfileId?: string;
+    logicalRequestId?: string;
   },
   output: ProviderMediaOutput,
   mediaId: string,
@@ -148,22 +156,25 @@ function mediaResult(
   createdAt: string,
   contentBase64?: string,
 ): GeneratedMediaResult {
+  const capability = input.capability ?? "IMAGE";
   return {
     mediaId,
-    capability: "IMAGE",
+    capability,
     operation: input.operation,
     provider: input.providerId,
     model: input.modelId,
     mimeType: output.mimeType,
     width: output.width,
     height: output.height,
+    durationSeconds: output.durationSeconds,
     byteSize: output.byteSize,
+    voiceProfileId: input.voiceProfileId,
     persistenceState,
     transientReference: persistenceState === "canonical" ? undefined : mediaId,
     canonicalAssetReference,
     provenance: {
       generated: true,
-      capability: "IMAGE",
+      capability,
       operation: input.operation,
       providerId: input.providerId,
       modelId: input.modelId,
@@ -172,11 +183,23 @@ function mediaResult(
       sourceAssetIds: input.sourceAssetIds,
       createdAt,
       canonicalAssetId: canonicalAssetReference,
+      voiceProfileId: input.voiceProfileId,
+      logicalRequestId: input.logicalRequestId,
     },
     createdAt,
     expiresAt: output.expiresAt,
     contentBase64,
   };
+}
+
+function filenameFor(mimeType: string) {
+  if (mimeType.startsWith("audio/")) {
+    if (mimeType.includes("wav")) return "generated.wav";
+    if (mimeType.includes("ogg") || mimeType.includes("opus")) return "generated.ogg";
+    if (mimeType.includes("aac") || mimeType.includes("mp4")) return "generated.aac";
+    return "generated.mp3";
+  }
+  return "generated.png";
 }
 
 export function holdKey(callerId: string, idempotencyKey: string) {

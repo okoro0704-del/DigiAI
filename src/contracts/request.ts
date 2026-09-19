@@ -1,6 +1,7 @@
 import type { EntityContext } from "./actor.js";
 import type { CapabilityId } from "./capabilities.js";
-import type { ImageConstraints, ImageInputReference, ImageOperation } from "./media.js";
+import type { AudioInputReference, AudioOutputFormat, ImageConstraints, ImageInputReference, MediaOperation } from "./media.js";
+import type { SpeechTask } from "./speech.js";
 import type { PrivacyClass } from "./privacy.js";
 
 export const DIGI_AI_MODES = ["ask", "summarize", "reason", "draft", "retrieve", "plan"] as const;
@@ -35,6 +36,12 @@ export type AskConstraints = {
   outputFormat?: ImageConstraints["outputFormat"];
   count?: number;
   persistCanonical?: boolean;
+  voiceProfileId?: string;
+  language?: string;
+  speechTask?: SpeechTask;
+  timestamps?: boolean;
+  speakingRate?: number;
+  audioOutputFormat?: AudioOutputFormat;
 };
 
 export type DigiAiAskInput = {
@@ -49,8 +56,9 @@ export type DigiAiAskInput = {
   draft?: DraftAssist;
   correlationId?: string;
   idempotencyKey?: string;
-  operation?: ImageOperation;
+  operation?: MediaOperation;
   images?: ImageInputReference[];
+  audio?: AudioInputReference[];
   /** Test/S2S attested actor only after caller authentication. Never a public auth mechanism. */
   actor?: { trustId?: string; displayName?: string };
 };

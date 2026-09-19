@@ -20,6 +20,7 @@ const NATIVE_TO_DIMENSION: Record<string, PricingRecord["dimensions"][number]["k
   audioSeconds: "audio_seconds",
   videoSeconds: "video_seconds",
   generatedSeconds: "generated_seconds",
+  characterCount: "characters",
 };
 
 function quantityFor(kind: string, usage: NativeUsage): number {
@@ -30,6 +31,7 @@ function quantityFor(kind: string, usage: NativeUsage): number {
   if (kind === "audio_seconds") return usage.audioSeconds ?? 0;
   if (kind === "video_seconds") return usage.videoSeconds ?? 0;
   if (kind === "generated_seconds") return usage.generatedSeconds ?? 0;
+  if (kind === "characters") return usage.characterCount ?? 0;
   return 0;
 }
 
@@ -69,6 +71,7 @@ export function estimateProviderCost(input: {
   const unknownDimensions: string[] = [];
   for (const key of Object.keys(usage)) {
     if (key === "totalTokens" || key === "imageSize" || key === "imageWidth" || key === "imageHeight" || key === "imageBytes") continue;
+    if (key === "inputBytes" || key === "outputBytes" || key === "audioMinutes") continue;
     if (key === "imageCount" && !pricing.dimensions.some((dim) => dim.kind === "image")) continue;
     const mapped = NATIVE_TO_DIMENSION[key];
     if (!mapped) {

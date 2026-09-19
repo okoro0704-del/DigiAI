@@ -8,6 +8,7 @@ import { ProviderPool } from "../providers/pool.js";
 import { providerHealth } from "../providers/router.js";
 import type { DigiAiStore } from "../store/types.js";
 import { UnboundDrive, type DriveStatus, type SovereignDrive } from "../media/drive.js";
+import { enabledVoiceProfileCount } from "../registry/voices.js";
 import { activePricingVersions } from "../usage/pricing-catalog.js";
 import { decideRoute } from "./policy.js";
 import { asPool, buildRuntimeRegistry } from "./runtime.js";
@@ -52,14 +53,20 @@ export function buildHealthResponse(
       defaultModel: config.defaultModels[id] || config.aiModel,
       providerPriority: config.providerPriority,
     });
-    const configured = decision.ok;
+    const voiceSupported = Boolean(
+      capabilities.SPEECH_TO_TEXT?.supported && capabilities.THINK?.supported && capabilities.TEXT_TO_SPEECH?.supported,
+    );
+    const configured = id === "VOICE"
+      ? Boolean(capabilities.SPEECH_TO_TEXT?.configured && capabilities.THINK?.configured && capabilities.TEXT_TO_SPEECH?.configured)
+      : decision.ok;
+    const supported = id === "VOICE" ? voiceSupported : supportedModels.length > 0;
     capabilities[id] = {
-      supported: supportedModels.length > 0,
+      supported,
       configured,
       runtimeVerified: false,
-      status: !supportedModels.length ? "unsupported" : configured ? "configured" : "unconfigured",
-      supportedProviders: supportedProviders.size,
-      configuredProviders: configuredProviders.length,
+      status: !supported ? "unsupported" : configured ? "configured" : "unconfigured",
+      supportedProviders: id === "VOICE" ? (voiceSupported ? 1 : 0) : supportedProviders.size,
+      configuredProviders: id === "VOICE" ? (configured ? 1 : 0) : configuredProviders.length,
       runtimeVerifiedProviders: 0,
     };
   }
@@ -85,6 +92,15 @@ export function buildHealthResponse(
       enabled: true,
     },
     media: mediaHealth(drive),
+    audio: {
+      canonicalPersistence: {
+        available: Boolean(drive.status().write),
+        status: drive.status().write ? "available" : "unavailable",
+      },
+    },
+    voiceProfiles: {
+      configuredCount: enabledVoiceProfileCount(),
+    },
   };
 }
 

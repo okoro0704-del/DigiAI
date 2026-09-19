@@ -1,4 +1,5 @@
 import type { SovereignDrive } from "./drive.js";
+import { tinyWavFixture } from "./audio.js";
 
 /** 1x1 PNG. Drive bridge acceptance only — not real AI image generation. */
 export const DRIVE_ACCEPTANCE_PNG = Buffer.from(
@@ -52,6 +53,60 @@ export async function persistDriveAcceptanceFixture(input: {
     ok: true as const,
     label: DRIVE_ACCEPTANCE_LABEL,
     note: "Safe fixture through Digi AI media persistence. Not real AI image generation.",
+    canonicalAssetReference: written.reference.assetId,
+    system: written.reference.system,
+    tenantId: written.reference.tenantId,
+    hash: written.hash,
+    sizeBytes: written.sizeBytes,
+    readVerified: read.ok,
+  };
+}
+
+export const AUDIO_DRIVE_ACCEPTANCE_LABEL = "AUDIO_DRIVE_ACCEPTANCE";
+
+export async function persistAudioAcceptanceFixture(input: {
+  drive: SovereignDrive;
+  actorTrustId: string;
+  callerId: string;
+  tenantId?: string;
+  accessToken?: string;
+}) {
+  const bytes = tinyWavFixture(0.05);
+  const written = await input.drive.writeGenerated({
+    actorTrustId: input.actorTrustId,
+    callerId: input.callerId,
+    tenantId: input.tenantId,
+    accessToken: input.accessToken,
+    mimeType: "audio/wav",
+    bytes,
+    filename: "audio-drive-acceptance.wav",
+    mediaType: "audio/wav",
+    capability: "TEXT_TO_SPEECH",
+    providerId: "none",
+    modelId: "fixture",
+    sourceAssetIds: [],
+    executionRef: AUDIO_DRIVE_ACCEPTANCE_LABEL,
+    generated: true,
+  });
+  if (!written.ok) {
+    return {
+      ok: false as const,
+      label: AUDIO_DRIVE_ACCEPTANCE_LABEL,
+      error: written.error,
+      detail: written.detail,
+    };
+  }
+  const read = await input.drive.readAsset({
+    actorTrustId: input.actorTrustId,
+    callerId: input.callerId,
+    tenantId: input.tenantId,
+    accessToken: input.accessToken,
+    assetId: written.reference.assetId,
+  });
+  return {
+    ok: true as const,
+    label: AUDIO_DRIVE_ACCEPTANCE_LABEL,
+    note: "Safe audio fixture through Digi AI media persistence. Not real TTS provider acceptance.",
     canonicalAssetReference: written.reference.assetId,
     system: written.reference.system,
     tenantId: written.reference.tenantId,

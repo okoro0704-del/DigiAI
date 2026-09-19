@@ -11,8 +11,12 @@ export type NativeUsage = {
   imageBytes?: number;
   imageSize?: number;
   audioSeconds?: number;
+  audioMinutes?: number;
   videoSeconds?: number;
   generatedSeconds?: number;
+  characterCount?: number;
+  inputBytes?: number;
+  outputBytes?: number;
   [key: string]: number | undefined;
 };
 
@@ -74,6 +78,7 @@ export type RequestReceipt = {
     media?: unknown;
     finishState?: string;
     canonicalAssetReference?: string;
+    speech?: unknown;
   };
   createdAt: string;
 };

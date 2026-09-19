@@ -36,10 +36,35 @@ export type ImageConstraints = {
   persistCanonical?: boolean;
 };
 
+export const AUDIO_SOURCE_TYPES = IMAGE_SOURCE_TYPES;
+export type AudioSourceType = ImageSourceType;
+
+export const SPEECH_OPERATIONS = ["transcribe", "translate", "speak", "converse"] as const;
+export type SpeechOperation = (typeof SPEECH_OPERATIONS)[number];
+export type MediaOperation = ImageOperation | SpeechOperation;
+
+export const AUDIO_OUTPUT_FORMATS = ["mp3", "wav", "opus", "aac"] as const;
+export type AudioOutputFormat = (typeof AUDIO_OUTPUT_FORMATS)[number];
+
+/** Provider-neutral audio input. Callers do not pass provider URLs as the contract. */
+export type AudioInputReference = {
+  sourceType: AudioSourceType;
+  assetId?: string;
+  reference?: string;
+  mediaType?: "audio";
+  mimeType?: string;
+  durationSeconds?: number;
+  byteSize?: number;
+  provenance?: string;
+  accessPolicy?: string;
+  filename?: string;
+  dataBase64?: string;
+};
+
 export type MediaProvenance = {
   generated: boolean;
-  capability: "IMAGE" | "VISION";
-  operation: ImageOperation;
+  capability: "IMAGE" | "VISION" | "SPEECH_TO_TEXT" | "TEXT_TO_SPEECH" | "VOICE";
+  operation: MediaOperation;
   providerId: string;
   modelId?: string;
   actorTrustId?: string;
@@ -47,18 +72,22 @@ export type MediaProvenance = {
   sourceAssetIds: string[];
   createdAt: string;
   canonicalAssetId?: string;
+  voiceProfileId?: string;
+  logicalRequestId?: string;
 };
 
 export type GeneratedMediaResult = {
   mediaId: string;
-  capability: "IMAGE";
-  operation: ImageOperation;
+  capability: "IMAGE" | "TEXT_TO_SPEECH" | "VOICE";
+  operation: MediaOperation;
   provider: string;
   model?: string;
   mimeType: string;
   width?: number;
   height?: number;
+  durationSeconds?: number;
   byteSize?: number;
+  voiceProfileId?: string;
   persistenceState: PersistenceState;
   transientReference?: string;
   canonicalAssetReference?: string;
@@ -85,6 +114,18 @@ export function isImageOperation(value: unknown): value is ImageOperation {
 
 export function isSizeClass(value: unknown): value is SizeClass {
   return typeof value === "string" && (SIZE_CLASSES as readonly string[]).includes(value);
+}
+
+export function isAudioSourceType(value: unknown): value is AudioSourceType {
+  return isImageSourceType(value);
+}
+
+export function isSpeechOperation(value: unknown): value is SpeechOperation {
+  return typeof value === "string" && (SPEECH_OPERATIONS as readonly string[]).includes(value);
+}
+
+export function isAudioOutputFormat(value: unknown): value is AudioOutputFormat {
+  return typeof value === "string" && (AUDIO_OUTPUT_FORMATS as readonly string[]).includes(value);
 }
 
 export function sanitizeMediaForLedger(media?: GeneratedMediaResult[]): Array<Omit<GeneratedMediaResult, "contentBase64">> | undefined {

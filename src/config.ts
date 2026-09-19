@@ -76,6 +76,8 @@ export function loadConfig() {
       RETRIEVE: env("AI_DEFAULT_MODEL_RETRIEVE") || env("AI_MODEL", "gpt-4o-mini"),
       VISION: env("AI_DEFAULT_MODEL_VISION", "gpt-4o"),
       IMAGE: env("AI_DEFAULT_MODEL_IMAGE", "gpt-image-1"),
+      SPEECH_TO_TEXT: env("AI_DEFAULT_MODEL_STT", "whisper-1"),
+      TEXT_TO_SPEECH: env("AI_DEFAULT_MODEL_TTS", "tts-1"),
     } as Record<string, string>,
     cloudMaxPrivacy: (env("AI_CLOUD_MAX_PRIVACY", "PRIVATE").toUpperCase() || "PRIVATE") as
       | "PUBLIC"
@@ -96,6 +98,10 @@ export function loadConfig() {
     maxImageBytes: Number(env("MAX_IMAGE_BYTES", "4000000")),
     maxImageOutputs: Number(env("MAX_IMAGE_OUTPUTS", "4")),
     maxTransientBytes: Number(env("MAX_TRANSIENT_BYTES", "8000000")),
+    maxAudioInputs: Number(env("MAX_AUDIO_INPUTS", "1")),
+    maxAudioBytes: Number(env("MAX_AUDIO_BYTES", "25000000")),
+    maxAudioSeconds: Number(env("MAX_AUDIO_SECONDS", "1400")),
+    maxTtsChars: Number(env("MAX_TTS_CHARS", "4096")),
     sovereignDriveUrl: (
       env("SOVEREIGN_DRIVE_URL") || env("DATAZONE_BASE_URL")
     ).replace(/\/$/, ""),
