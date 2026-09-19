@@ -4,17 +4,23 @@ import { defaultPrivacyClass, isPrivacyClass } from "../contracts/privacy.js";
 import type { DigiAiAskInput } from "../contracts/request.js";
 import type { DigiAiAskResponse } from "../contracts/response.js";
 import type { ProvenanceItem } from "../contracts/provenance.js";
+import type { GeneratedMediaResult, ImageOperation } from "../contracts/media.js";
+import { sanitizeMediaForLedger } from "../contracts/media.js";
 import type { NativeUsage } from "../contracts/usage.js";
 import type { DigiNewsReader, DigiPediaReader, NewsPage, DigiPediaPage } from "../adapters/types.js";
 import { clip, newId, nowIso } from "../lib/crypto.js";
 import { DigiAiError } from "../lib/http.js";
 import { requireSlug } from "../lib/slug.js";
 import { SYSTEM_POLICY, wrapCanonicalData } from "../lib/policy.js";
+import { UnboundDrive, type SovereignDrive } from "../media/drive.js";
+import { assertImageInputLimits, mapSizeClass, parseImageConstraints } from "../media/limits.js";
+import { normalizeGeneratedMedia } from "../media/normalize.js";
+import { clearResolvedImages, imageDataBlock, resolveImageInputs } from "../media/resolve.js";
 import { ProviderPool } from "../providers/pool.js";
 import type { IntelligenceProvider } from "../providers/types.js";
 import { executeWithFailover } from "../routing/execute.js";
 import { resolveRequestedCapability } from "../routing/resolve-capability.js";
-import { buildLedgerEntry } from "../usage/ledger.js";
+import { buildLedgerEntry, usageFromLedger } from "../usage/ledger.js";
 import { persistExecution } from "../usage/persist.js";
 import { buildRequestReceipt, buildUsageRecord, nativeUsageFromTokens, snapshotFromRecord } from "../usage/receipt.js";
 import type { DigiAiStore } from "../store/types.js";
@@ -28,6 +34,7 @@ export type EngineDeps = {
   digipedia: DigiPediaReader;
   diginews: DigiNewsReader;
   store: DigiAiStore;
+  drive?: SovereignDrive;
 };
 
 export async function handleAsk(input: {
@@ -125,13 +132,43 @@ export async function handleAsk(input: {
   const privacyClass = isPrivacyClass(body.constraints?.privacyClass)
     ? body.constraints.privacyClass
     : defaultPrivacyClass();
+  const operation = resolveOperation(capability, body.operation);
+  const images = body.images ?? [];
+  if (images.length) assertImageInputLimits(images, deps.config);
+  if (capability === "VISION" && !images.length) {
+    throw new DigiAiError(400, "invalid_media", "VISION requires at least one authorized image.");
+  }
+  if (capability === "IMAGE" && operation === "edit" && !images.length) {
+    throw new DigiAiError(400, "invalid_media", "IMAGE edit requires at least one authorized source image.");
+  }
+  const imageConstraints = capability === "IMAGE" ? parseImageConstraints(body.constraints, deps.config) : undefined;
   userParts.push(`RESPONSE MODE: ${mode}`);
   userParts.push(`CAPABILITY: ${capability}`);
+  if (operation) userParts.push(`OPERATION: ${operation}`);
   userParts.push("If canonical data is present, ground generated text in it and say when you are interpreting.");
 
   const startedAt = nowIso();
+  if (body.idempotencyKey) {
+    const replayed = await replayIdempotent(deps, caller.id, body.idempotencyKey);
+    if (replayed) return replayed;
+  }
+  const drive = deps.drive ?? new UnboundDrive();
+  const resolvedImages = images.length
+    ? await resolveImageInputs({
+        images,
+        config: deps.config,
+        drive,
+        actorTrustId: actor.trustId,
+        callerId: caller.id,
+        tenantId: entity.slug,
+      })
+    : [];
+  if (resolvedImages.length) {
+    userParts.push(wrapCanonicalData("image-metadata", imageDataBlock(resolvedImages)));
+  }
+
   const pool = deps.pool ?? new ProviderPool({ [deps.provider.name]: deps.provider });
-  const allowFailover = body.constraints?.allowFailover !== false && deps.config.allowFailover;
+  const allowFailover = capability !== "IMAGE" && body.constraints?.allowFailover !== false && deps.config.allowFailover;
   const forceProvider =
     (deps.config.allowRouteOverride || (!deps.config.isProd && caller.id === "test")) &&
     body.constraints?.forceProvider
@@ -150,8 +187,20 @@ export async function handleAsk(input: {
         { role: "user", content: userParts.join("\n\n") },
       ],
       structuredOutput: body.constraints?.structuredOutput === true,
+      capability,
+      operation,
+      images: resolvedImages.map((image) => ({
+        mimeType: image.mimeType,
+        dataUrl: image.dataUrl,
+        filename: image.filename,
+      })),
+      imageCount: imageConstraints?.count,
+      size: mapSizeClass(imageConstraints?.sizeClass, imageConstraints?.aspectRatio),
+      outputFormat: imageConstraints?.outputFormat,
+      transparentBackground: imageConstraints?.transparentBackground,
     },
   });
+  clearResolvedImages(resolvedImages);
 
   if (!executed.decision.ok) {
     const error = executed.decision.error === "unsupported_capability" ? "unsupported_capability" : "provider_unavailable";
@@ -174,10 +223,11 @@ export async function handleAsk(input: {
       success: false,
       status: error,
       errorClass: executed.decision.error,
-      operation: mode,
+      operation: operation ?? mode,
       sources,
       routeExplanation: executed.explanation,
       resultStatus: sourceUnavailable ? "source_unavailable" : error,
+      idempotencyKey: body.idempotencyKey,
     });
     return {
       ok: false,
@@ -197,6 +247,24 @@ export async function handleAsk(input: {
       },
       receiptId,
     };
+  }
+
+  let media: GeneratedMediaResult[] | undefined;
+  const finalPreview = executed.final;
+  if (finalPreview?.ok && capability === "IMAGE" && finalPreview.media?.length) {
+    media = await normalizeGeneratedMedia({
+      outputs: finalPreview.media,
+      providerId: finalPreview.provider,
+      modelId: finalPreview.model,
+      operation: operation === "edit" ? "edit" : "generate",
+      actorTrustId: actor.trustId,
+      applicationId: caller.id,
+      sourceAssetIds: resolvedImages.map((image) => image.assetId).filter((id): id is string => Boolean(id)),
+      persistCanonical: body.constraints?.persistCanonical === true,
+      drive,
+      tenantId: entity.slug,
+      maxTransientBytes: deps.config.maxTransientBytes,
+    });
   }
 
   let recorded: Awaited<ReturnType<typeof persistAsk>> | undefined;
@@ -231,10 +299,14 @@ export async function handleAsk(input: {
       nativeUsage,
       providerRequestId: providerResult.ok ? providerResult.providerRequestId : undefined,
       errorClass: providerResult.ok ? undefined : providerResult.error,
-      operation: mode,
+      operation: operation ?? mode,
       sources,
       routeExplanation: `${executed.explanation}; attempt ${attempt.attemptIndex} ${attempt.providerId}/${attempt.modelId} ${providerResult.ok ? "ok" : providerResult.error}${attempt.failoverReason ? `; ${attempt.failoverReason}` : ""}`,
       resultStatus: sourceUnavailable ? "source_unavailable" : status,
+      idempotencyKey: body.idempotencyKey,
+      resultSnapshot: attempt.result.ok
+        ? { answer: attempt.result.text, media: sanitizeMediaForLedger(media), finishState: "completed" }
+        : undefined,
     });
   }
 
@@ -291,7 +363,9 @@ export async function handleAsk(input: {
     kind: "generated",
     system: "digi-ai",
     retrievedAt: nowIso(),
-    note: "Generated by Digi AI from the selected context. Not a canonical record.",
+    note: capability === "IMAGE"
+      ? "Generated imagery. Not original captured media. Transient output is not a Sovereign Drive asset."
+      : "Generated by Digi AI from the selected context. Not a canonical record.",
   });
 
   const objectiveCandidate = proposeObjective(message, body.draft?.actionType);
@@ -313,6 +387,7 @@ export async function handleAsk(input: {
       finishState: "completed",
     },
     receiptId,
+    media,
     objectiveCandidate,
   };
 }
@@ -404,6 +479,8 @@ async function persistAsk(input: {
   sources: string[];
   routeExplanation?: string;
   resultStatus: "completed" | "failed" | "unauthorized" | "provider_unavailable" | "source_unavailable" | "unsupported_capability";
+  idempotencyKey?: string;
+  resultSnapshot?: { answer?: string; media?: unknown; finishState?: string };
 }) {
   const ledger = buildLedgerEntry({
     receiptId: input.receiptId,
@@ -460,7 +537,59 @@ async function persistAsk(input: {
     routeExplanation: input.routeExplanation,
     resultStatus: input.resultStatus,
     usageId: input.usageId,
+    idempotencyKey: input.idempotencyKey,
+    resultSnapshot: input.resultSnapshot,
   });
   await persistExecution(input.deps.store, { ledger, usage, receipt });
   return { usage, ledger, receipt, receiptId: input.receiptId };
+}
+
+function resolveOperation(capability: string, requested?: ImageOperation): ImageOperation | undefined {
+  if (capability === "VISION") return "analyze";
+  if (capability === "IMAGE") {
+    if (requested === "analyze") {
+      throw new DigiAiError(400, "invalid_request", "IMAGE cannot run as VISION analysis.");
+    }
+    return requested === "edit" ? "edit" : "generate";
+  }
+  return requested;
+}
+
+async function replayIdempotent(
+  deps: EngineDeps,
+  callerId: string,
+  idempotencyKey: string,
+): Promise<DigiAiAskResponse | null> {
+  const existing = await deps.store.findReceiptByIdempotency?.(callerId, idempotencyKey);
+  if (!existing || existing.resultStatus !== "completed" || !existing.resultSnapshot) return null;
+  const ledger = await deps.store.getLedgerByReceiptId(existing.receiptId);
+  const usage = ledger
+    ? snapshotFromRecord(usageFromLedger(ledger, { usageId: existing.usageId, callerId, correlationId: existing.correlationId }))
+    : {
+        usageId: existing.usageId ?? existing.receiptId,
+        provider: existing.provider ?? "unknown",
+        capability: existing.capability,
+        digiAiUnits: null,
+        latencyMs: 0,
+        success: true,
+      };
+  return {
+    ok: true,
+    service: "digi-ai",
+    answer: existing.resultSnapshot.answer || "Reused previous Digi AI result.",
+    provenance: [],
+    usage,
+    execution: {
+      requestId: existing.requestId,
+      correlationId: existing.correlationId,
+      provider: existing.provider ?? usage.provider,
+      model: existing.model,
+      capability: existing.capability,
+      latencyMs: usage.latencyMs,
+      sourcesUsed: existing.sourcesAccessed,
+      finishState: "completed",
+    },
+    receiptId: existing.receiptId,
+    media: Array.isArray(existing.resultSnapshot.media) ? existing.resultSnapshot.media as GeneratedMediaResult[] : undefined,
+  };
 }

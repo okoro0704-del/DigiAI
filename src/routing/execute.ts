@@ -62,7 +62,8 @@ export async function executeWithFailover(input: {
   if (input.forceProvider) {
     ordered = ordered.filter((row) => row.providerId === input.forceProvider);
   }
-  const maxAttempts = Math.max(1, input.config.maxProviderAttempts);
+  const allowFailover = input.capability === "IMAGE" ? false : input.allowFailover;
+  const maxAttempts = input.capability === "IMAGE" ? 1 : Math.max(1, input.config.maxProviderAttempts);
   const attempts: RouteAttempt[] = [];
   let explanation = decision.explanation;
 
@@ -75,7 +76,7 @@ export async function executeWithFailover(input: {
       const previous = attempts[attempts.length - 1]!;
       const previousError = previous.result.ok ? undefined : previous.result.error;
       const denied = failoverDeniedReason({
-        allowFailover: input.allowFailover,
+        allowFailover,
         error: previousError,
         attempts: attempts.length,
         maxAttempts,
@@ -108,9 +109,9 @@ export async function executeWithFailover(input: {
       explanation += `; completed=${route.providerId}/${route.modelId}`;
       break;
     }
-    if (!isFailoverEligibleError(result.error) || !input.allowFailover) {
+    if (!isFailoverEligibleError(result.error) || !allowFailover) {
       const denied = failoverDeniedReason({
-        allowFailover: input.allowFailover,
+        allowFailover,
         error: result.error,
         attempts: attempts.length,
         maxAttempts,

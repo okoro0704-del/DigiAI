@@ -1,5 +1,6 @@
 import type { EntityContext } from "./actor.js";
 import type { CapabilityId } from "./capabilities.js";
+import type { ImageConstraints, ImageInputReference, ImageOperation } from "./media.js";
 import type { PrivacyClass } from "./privacy.js";
 
 export const DIGI_AI_MODES = ["ask", "summarize", "reason", "draft", "retrieve", "plan"] as const;
@@ -28,6 +29,12 @@ export type AskConstraints = {
   allowFailover?: boolean;
   /** Operator/test-only. Rejected for normal callers. */
   forceProvider?: string;
+  aspectRatio?: string;
+  sizeClass?: ImageConstraints["sizeClass"];
+  transparentBackground?: boolean;
+  outputFormat?: ImageConstraints["outputFormat"];
+  count?: number;
+  persistCanonical?: boolean;
 };
 
 export type DigiAiAskInput = {
@@ -41,6 +48,9 @@ export type DigiAiAskInput = {
   suppliedContext?: SuppliedContext;
   draft?: DraftAssist;
   correlationId?: string;
+  idempotencyKey?: string;
+  operation?: ImageOperation;
+  images?: ImageInputReference[];
   /** Test/S2S attested actor only after caller authentication. Never a public auth mechanism. */
   actor?: { trustId?: string; displayName?: string };
 };

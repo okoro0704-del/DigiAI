@@ -11,5 +11,6 @@ export interface DigiAiStore {
   queryLedger(query: LedgerQuery): Promise<LedgerEntry[]>;
   aggregateUsage(query: LedgerQuery): Promise<UsageAggregate>;
   ledgerStatus(): LedgerStatus;
+  findReceiptByIdempotency?(callerId: string, idempotencyKey: string): Promise<RequestReceipt | null>;
   ready?(): Promise<void>;
 }

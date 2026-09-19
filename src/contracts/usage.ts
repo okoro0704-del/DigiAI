@@ -5,6 +5,10 @@ export type NativeUsage = {
   cachedTokens?: number;
   cachedInputTokens?: number;
   imageCount?: number;
+  generatedImageCount?: number;
+  imageWidth?: number;
+  imageHeight?: number;
+  imageBytes?: number;
   imageSize?: number;
   audioSeconds?: number;
   videoSeconds?: number;
@@ -64,5 +68,11 @@ export type RequestReceipt = {
   routeExplanation?: string;
   resultStatus: "completed" | "failed" | "unauthorized" | "provider_unavailable" | "source_unavailable" | "unsupported_capability";
   usageId?: string;
+  idempotencyKey?: string;
+  resultSnapshot?: {
+    answer?: string;
+    media?: unknown;
+    finishState?: string;
+  };
   createdAt: string;
 };

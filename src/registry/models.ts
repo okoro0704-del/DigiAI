@@ -48,6 +48,18 @@ export const CATALOG_MODELS: ModelRecord[] = [
     deploymentType: "cloud",
   },
   {
+    id: "gpt-image-1",
+    providerId: "openai",
+    capabilities: ["IMAGE"],
+    modality: ["image"],
+    structuredOutput: false,
+    toolCalling: false,
+    streaming: false,
+    status: "enabled",
+    pricingRef: "openai:gpt-image-1",
+    deploymentType: "cloud",
+  },
+  {
     id: "gemini-2.0-flash",
     providerId: "gemini",
     capabilities: OPENAI_TEXT_CAPABILITIES,

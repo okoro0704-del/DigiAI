@@ -31,7 +31,7 @@ export const CAPABILITY_CATALOG: Record<CapabilityId, CapabilityDefinition> = {
   RESEARCH: define("RESEARCH", { modalityIn: ["text"], modalityOut: ["text"], latencyClass: "medium", costClass: "medium", privacyEligible: ALL_PRIVACY }),
   CODE: define("CODE", { modalityIn: ["text"], modalityOut: ["text"], structuredOutput: true, latencyClass: "medium", costClass: "medium", privacyEligible: ALL_PRIVACY }),
   VISION: define("VISION", { modalityIn: ["image", "text"], modalityOut: ["text"], latencyClass: "medium", costClass: "medium" }),
-  IMAGE: define("IMAGE", { modalityIn: ["text"], modalityOut: ["image"], latencyClass: "high", costClass: "high" }),
+  IMAGE: define("IMAGE", { modalityIn: ["text", "image"], modalityOut: ["image"], latencyClass: "high", costClass: "high" }),
   VIDEO: define("VIDEO", { modalityIn: ["text"], modalityOut: ["video"], latencyClass: "high", costClass: "high" }),
   SPEECH_TO_TEXT: define("SPEECH_TO_TEXT", { modalityIn: ["audio"], modalityOut: ["text"], latencyClass: "medium", costClass: "medium" }),
   TEXT_TO_SPEECH: define("TEXT_TO_SPEECH", { modalityIn: ["text"], modalityOut: ["audio"], latencyClass: "medium", costClass: "medium" }),

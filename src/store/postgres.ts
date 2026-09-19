@@ -132,6 +132,17 @@ export class PostgresStore implements DigiAiStore {
     return result.rows.map((row) => row.payload as RequestReceipt);
   }
 
+  async findReceiptByIdempotency(callerId: string, idempotencyKey: string) {
+    await this.ready();
+    const result = await this.pool.query(
+      `SELECT payload FROM request_receipts
+       WHERE payload->>'callerId' = $1 AND payload->>'idempotencyKey' = $2
+       ORDER BY created_at ASC LIMIT 1`,
+      [callerId, idempotencyKey],
+    );
+    return result.rows[0] ? (result.rows[0].payload as RequestReceipt) : null;
+  }
+
   async recordLedger(entry: LedgerEntry) {
     await this.ready();
     try {

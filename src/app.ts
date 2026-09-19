@@ -3,6 +3,8 @@ import type { AppConfig } from "./config.js";
 import { isCapabilityId } from "./contracts/capabilities.js";
 import { isPrivacyClass } from "./contracts/privacy.js";
 import { CONTEXT_SOURCES, isContextSourceId, isDigiAiMode, type AskConstraints, type DigiAiAskInput } from "./contracts/request.js";
+import { isImageOperation, isImageSourceType, isSizeClass, type ImageInputReference } from "./contracts/media.js";
+import { UnboundDrive, type SovereignDrive } from "./media/drive.js";
 import type { HealthResponse } from "./contracts/response.js";
 import { buildHealthResponse } from "./routing/health.js";
 import type { TwinBriefInput, TwinOwnerActivity } from "./contracts/twin.js";
@@ -29,6 +31,7 @@ export type DigiAiAppOptions = {
   digipedia?: DigiPediaReader;
   diginews?: DigiNewsReader;
   store?: DigiAiStore;
+  drive?: SovereignDrive;
 };
 
 const FORBIDDEN_ECONOMIC_FIELDS = [
@@ -85,6 +88,9 @@ function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): Di
   const actor = body.actor && typeof body.actor === "object" ? (body.actor as DigiAiAskInput["actor"]) : undefined;
   const draft = body.draft && typeof body.draft === "object" ? (body.draft as DigiAiAskInput["draft"]) : undefined;
   const constraints = parseConstraints(body.constraints);
+  if (body.operation !== undefined && !isImageOperation(body.operation)) {
+    throw new DigiAiError(400, "invalid_request", "Unknown media operation.");
+  }
   return {
     message: body.message,
     mode: isDigiAiMode(body.mode) ? body.mode : undefined,
@@ -95,6 +101,9 @@ function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): Di
     suppliedContext: supplied,
     draft,
     correlationId: typeof body.correlationId === "string" ? body.correlationId : undefined,
+    idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : undefined,
+    operation: isImageOperation(body.operation) ? body.operation : undefined,
+    images: parseImages(body.images ?? body.media),
     actor,
   };
 }
@@ -114,7 +123,39 @@ function parseConstraints(raw: unknown): AskConstraints | undefined {
     maxLatency: typeof body.maxLatency === "string" ? body.maxLatency : undefined,
     allowFailover: typeof body.allowFailover === "boolean" ? body.allowFailover : undefined,
     forceProvider: typeof body.forceProvider === "string" ? body.forceProvider.toLowerCase() : undefined,
+    aspectRatio: typeof body.aspectRatio === "string" ? body.aspectRatio : undefined,
+    sizeClass: isSizeClass(body.sizeClass) ? body.sizeClass : undefined,
+    transparentBackground: body.transparentBackground === true,
+    outputFormat: body.outputFormat === "png" || body.outputFormat === "jpeg" || body.outputFormat === "webp" ? body.outputFormat : undefined,
+    count: typeof body.count === "number" ? body.count : undefined,
+    persistCanonical: body.persistCanonical === true,
   };
+}
+
+function parseImages(raw: unknown): ImageInputReference[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) throw new DigiAiError(400, "invalid_media", "images must be an array.");
+  return raw.map((row) => {
+    if (!row || typeof row !== "object") throw new DigiAiError(400, "invalid_media", "Each image must be an object.");
+    const image = row as Record<string, unknown>;
+    if (!isImageSourceType(image.sourceType)) {
+      throw new DigiAiError(400, "invalid_media", "Unknown image source type.");
+    }
+    return {
+      sourceType: image.sourceType,
+      assetId: typeof image.assetId === "string" ? image.assetId : undefined,
+      reference: typeof image.reference === "string" ? image.reference : undefined,
+      mediaType: "image",
+      mimeType: typeof image.mimeType === "string" ? image.mimeType : undefined,
+      width: typeof image.width === "number" ? image.width : undefined,
+      height: typeof image.height === "number" ? image.height : undefined,
+      byteSize: typeof image.byteSize === "number" ? image.byteSize : undefined,
+      provenance: typeof image.provenance === "string" ? image.provenance : undefined,
+      accessPolicy: typeof image.accessPolicy === "string" ? image.accessPolicy : undefined,
+      filename: typeof image.filename === "string" ? image.filename : undefined,
+      dataBase64: typeof image.dataBase64 === "string" ? image.dataBase64 : undefined,
+    };
+  });
 }
 
 function parseTwinBriefBody(raw: unknown): TwinBriefInput {
@@ -147,10 +188,11 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
     digipedia: options.digipedia ?? new HttpDigiPediaReader(config),
     diginews: options.diginews ?? new HttpDigiNewsReader(config),
     store,
+    drive: options.drive ?? new UnboundDrive(),
   };
   const resolver = options.resolver ?? createTrustIdResolver(config);
 
-  app.get("/health", async (): Promise<HealthResponse> => buildHealthResponse(config, pool, store));
+  app.get("/health", async (): Promise<HealthResponse> => buildHealthResponse(config, pool, store, deps.drive));
 
   const sendError = (reply: FastifyReply, err: unknown, extra: Record<string, unknown> = {}) => {
     if (err instanceof DigiAiError) {
@@ -229,6 +271,9 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
     const requestId = newId("req");
     try {
       const body = parseAskBody(req.body, config.maxMessageChars, config.maxSuppliedChars);
+      if (!body.idempotencyKey && typeof req.headers["idempotency-key"] === "string") {
+        body.idempotencyKey = req.headers["idempotency-key"];
+      }
       const identity = await resolveRequestIdentity({
         config,
         headers: req.headers,

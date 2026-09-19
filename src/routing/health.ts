@@ -7,6 +7,7 @@ import type { IntelligenceProvider } from "../providers/types.js";
 import { ProviderPool } from "../providers/pool.js";
 import { providerHealth } from "../providers/router.js";
 import type { DigiAiStore } from "../store/types.js";
+import { UnboundDrive, type SovereignDrive } from "../media/drive.js";
 import { activePricingVersions } from "../usage/pricing-catalog.js";
 import { decideRoute } from "./policy.js";
 import { asPool, buildRuntimeRegistry } from "./runtime.js";
@@ -15,6 +16,7 @@ export function buildHealthResponse(
   config: AppConfig,
   provider: IntelligenceProvider | ProviderPool,
   store?: DigiAiStore,
+  drive: SovereignDrive = new UnboundDrive(),
 ): HealthResponse {
   const pool = asPool(provider);
   const registry = buildRuntimeRegistry(config, pool);
@@ -81,6 +83,12 @@ export function buildHealthResponse(
     },
     costAccounting: {
       enabled: true,
+    },
+    media: {
+      canonicalPersistence: {
+        available: drive.status().write,
+        status: drive.status().write ? "available" : "unavailable",
+      },
     },
   };
 }

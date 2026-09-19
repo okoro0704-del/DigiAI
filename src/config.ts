@@ -74,6 +74,8 @@ export function loadConfig() {
       CODE: env("AI_DEFAULT_MODEL_CODE") || env("AI_MODEL", "gpt-4o-mini"),
       TRANSLATE: env("AI_DEFAULT_MODEL_TRANSLATE") || env("AI_MODEL", "gpt-4o-mini"),
       RETRIEVE: env("AI_DEFAULT_MODEL_RETRIEVE") || env("AI_MODEL", "gpt-4o-mini"),
+      VISION: env("AI_DEFAULT_MODEL_VISION", "gpt-4o"),
+      IMAGE: env("AI_DEFAULT_MODEL_IMAGE", "gpt-image-1"),
     } as Record<string, string>,
     cloudMaxPrivacy: (env("AI_CLOUD_MAX_PRIVACY", "PRIVATE").toUpperCase() || "PRIVATE") as
       | "PUBLIC"
@@ -90,6 +92,10 @@ export function loadConfig() {
     allowAttestedActor: env("DIGI_AI_ALLOW_ATTESTED_ACTOR").toLowerCase() === "true",
     maxMessageChars: Number(env("MAX_MESSAGE_CHARS", "8000")),
     maxSuppliedChars: Number(env("MAX_SUPPLIED_CHARS", "12000")),
+    maxImageInputs: Number(env("MAX_IMAGE_INPUTS", "4")),
+    maxImageBytes: Number(env("MAX_IMAGE_BYTES", "4000000")),
+    maxImageOutputs: Number(env("MAX_IMAGE_OUTPUTS", "4")),
+    maxTransientBytes: Number(env("MAX_TRANSIENT_BYTES", "8000000")),
     newsLimit: Number(env("DIGINEWS_LIMIT", "8")),
   };
 }

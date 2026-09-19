@@ -2,6 +2,7 @@ import type { ObjectiveCandidate } from "./objectives.js";
 import type { ProvenanceItem } from "./provenance.js";
 import type { NativeUsage } from "./usage.js";
 import type { CapabilityId } from "./capabilities.js";
+import type { GeneratedMediaResult } from "./media.js";
 
 export type DeploymentType = "cloud" | "self_hosted" | "local" | "internal";
 
@@ -61,6 +62,7 @@ export type DigiAiAskSuccess = {
   usage: UsageSnapshot;
   execution: ExecutionMeta;
   receiptId: string;
+  media?: GeneratedMediaResult[];
   objectiveCandidate?: ObjectiveCandidate;
 };
 
@@ -73,6 +75,7 @@ export type DigiAiAskFailure = {
   usage?: UsageSnapshot;
   execution?: ExecutionMeta;
   receiptId?: string;
+  media?: GeneratedMediaResult[];
 };
 
 export type DigiAiAskResponse = DigiAiAskSuccess | DigiAiAskFailure;
@@ -102,4 +105,10 @@ export type HealthResponse = {
   usageLedger: EconomicHealth["usageLedger"];
   pricingCatalog: EconomicHealth["pricingCatalog"];
   costAccounting: EconomicHealth["costAccounting"];
+  media: {
+    canonicalPersistence: {
+      available: boolean;
+      status: "available" | "unavailable";
+    };
+  };
 };

@@ -6,7 +6,14 @@ export function classifyProviderHttpError(
 ): Pick<ProviderFailure, "error" | "detail"> {
   const type = String(body?.error?.type ?? "").toLowerCase();
   const code = String(body?.error?.code ?? "").toLowerCase();
-  const marker = `${type} ${code}`;
+  const message = String(body?.error?.message ?? "").toLowerCase();
+  const marker = `${type} ${code} ${message}`;
+  if (marker.includes("moderation") || marker.includes("safety") || marker.includes("content_policy")) {
+    return { error: "safety_refused", detail: "The provider refused this request under its safety policy." };
+  }
+  if (marker.includes("invalid image") || marker.includes("could not decode") || marker.includes("unsupported image")) {
+    return { error: "invalid_media", detail: "The provider rejected the image as invalid." };
+  }
   if (status === 429 || marker.includes("rate_limit")) {
     return { error: "rate_limited", detail: "AI reasoning is temporarily rate limited." };
   }

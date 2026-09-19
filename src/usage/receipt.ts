@@ -8,6 +8,11 @@ export function nativeUsageFromTokens(input?: {
   outputTokens?: number;
   totalTokens?: number;
   cachedTokens?: number;
+  imageCount?: number;
+  generatedImageCount?: number;
+  imageWidth?: number;
+  imageHeight?: number;
+  imageBytes?: number;
 }): NativeUsage | undefined {
   if (!input) return undefined;
   const native: NativeUsage = {};
@@ -15,6 +20,11 @@ export function nativeUsageFromTokens(input?: {
   if (typeof input.outputTokens === "number") native.outputTokens = input.outputTokens;
   if (typeof input.totalTokens === "number") native.totalTokens = input.totalTokens;
   if (typeof input.cachedTokens === "number") native.cachedTokens = input.cachedTokens;
+  if (typeof input.imageCount === "number") native.imageCount = input.imageCount;
+  if (typeof input.generatedImageCount === "number") native.generatedImageCount = input.generatedImageCount;
+  if (typeof input.imageWidth === "number") native.imageWidth = input.imageWidth;
+  if (typeof input.imageHeight === "number") native.imageHeight = input.imageHeight;
+  if (typeof input.imageBytes === "number") native.imageBytes = input.imageBytes;
   return Object.keys(native).length ? native : undefined;
 }
 
@@ -99,6 +109,8 @@ export function buildRequestReceipt(input: {
   routeExplanation?: string;
   resultStatus: RequestReceipt["resultStatus"];
   usageId?: string;
+  idempotencyKey?: string;
+  resultSnapshot?: RequestReceipt["resultSnapshot"];
 }): RequestReceipt {
   return {
     receiptId: input.receiptId,
@@ -116,6 +128,8 @@ export function buildRequestReceipt(input: {
     routeExplanation: input.routeExplanation,
     resultStatus: input.resultStatus,
     usageId: input.usageId,
+    idempotencyKey: input.idempotencyKey,
+    resultSnapshot: input.resultSnapshot,
     createdAt: nowIso(),
   };
 }
