@@ -10,6 +10,14 @@ import type {
   CreditReservation,
   ReservationStatus,
 } from "../contracts/credits.js";
+import type {
+  AuthorityAuditEvent,
+  DigiAiActionAuthorization,
+  DigiAiActionIntent,
+  DigiAiAuthorityGrant,
+  DigiAiHumanDecision,
+  DigiAiHumanDecisionRequest,
+} from "../contracts/authority.js";
 import type { DigiAiExecutionPlan, DigiAiExecutionStep, DigiAiObjective } from "../contracts/orchestration.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
@@ -40,8 +48,15 @@ export class MemoryStore implements DigiAiStore {
   readonly objectives: DigiAiObjective[] = [];
   readonly plans: DigiAiExecutionPlan[] = [];
   readonly steps: DigiAiExecutionStep[] = [];
+  readonly actionIntents: DigiAiActionIntent[] = [];
+  readonly authorityGrants: DigiAiAuthorityGrant[] = [];
+  readonly humanDecisions: DigiAiHumanDecision[] = [];
+  readonly decisionRequests: DigiAiHumanDecisionRequest[] = [];
+  readonly actionAuthorizations: DigiAiActionAuthorization[] = [];
+  readonly authorityAudit: AuthorityAuditEvent[] = [];
   private writable = true;
   private readonly creditLocks = new Map<string, Promise<void>>();
+  private readonly authorityLocks = new Map<string, Promise<void>>();
 
   setWritable(value: boolean) {
     this.writable = value;
@@ -504,6 +519,142 @@ export class MemoryStore implements DigiAiStore {
 
   async listObjectives() {
     return [...this.objectives];
+  }
+
+  authorityStatus(): LedgerStatus {
+    return this.ledgerStatus();
+  }
+
+  async putActionIntent(row: DigiAiActionIntent) {
+    const idx = this.actionIntents.findIndex((item) => item.actionIntentId === row.actionIntentId);
+    if (idx >= 0) this.actionIntents[idx] = row;
+    else this.actionIntents.push(row);
+  }
+
+  async getActionIntent(actionIntentId: string) {
+    return this.actionIntents.find((row) => row.actionIntentId === actionIntentId) ?? null;
+  }
+
+  async listActionIntents(objectiveId: string) {
+    return this.actionIntents.filter((row) => row.objectiveId === objectiveId);
+  }
+
+  async putAuthorityGrant(row: DigiAiAuthorityGrant) {
+    const idx = this.authorityGrants.findIndex((item) => item.grantId === row.grantId);
+    if (idx >= 0) this.authorityGrants[idx] = row;
+    else this.authorityGrants.push(row);
+  }
+
+  async getAuthorityGrant(grantId: string) {
+    return this.authorityGrants.find((row) => row.grantId === grantId) ?? null;
+  }
+
+  async listAuthorityGrants(query: { actorId?: string; tenantId?: string }) {
+    return this.authorityGrants.filter(
+      (row) => (!query.actorId || row.grantorActorId === query.actorId || row.scope.actorId === query.actorId) && (!query.tenantId || !row.tenantId || row.tenantId === query.tenantId),
+    );
+  }
+
+  async reserveGrantOccurrence(grantId: string, now: string) {
+    return this.withAuthorityLock(grantId, async () => {
+      const grant = this.authorityGrants.find((row) => row.grantId === grantId);
+      if (!grant) return { ok: false as const, outcome: "INVALID" as const, reason: "MALFORMED_GRANT" as const, message: "Grant was not found." };
+      if (grant.status === "revoked" || grant.revokedAt) {
+        return { ok: false as const, outcome: "REVOKED" as const, reason: "GRANT_REVOKED" as const, message: "Grant has been revoked." };
+      }
+      if ((grant.expiresAt && grant.expiresAt <= now) || grant.status === "expired") {
+        grant.status = "expired";
+        return { ok: false as const, outcome: "EXPIRED" as const, reason: "GRANT_EXPIRED" as const, message: "Grant has expired." };
+      }
+      if (grant.limits.maxOccurrences != null && grant.consumedOccurrences >= grant.limits.maxOccurrences) {
+        return { ok: false as const, outcome: "DENIED" as const, reason: "OCCURRENCE_LIMIT_EXCEEDED" as const, message: "Grant occurrence limit has been consumed." };
+      }
+      grant.consumedOccurrences += 1;
+      return { ok: true as const, grant };
+    });
+  }
+
+  async putHumanDecision(row: DigiAiHumanDecision) {
+    this.humanDecisions.push(row);
+  }
+
+  async listHumanDecisions(actionIntentId: string) {
+    return this.humanDecisions.filter((row) => row.actionIntentId === actionIntentId);
+  }
+
+  async putDecisionRequest(row: DigiAiHumanDecisionRequest) {
+    const idx = this.decisionRequests.findIndex((item) => item.decisionRequestId === row.decisionRequestId);
+    if (idx >= 0) this.decisionRequests[idx] = row;
+    else this.decisionRequests.push(row);
+  }
+
+  async getDecisionRequest(decisionRequestId: string) {
+    return this.decisionRequests.find((row) => row.decisionRequestId === decisionRequestId) ?? null;
+  }
+
+  async putActionAuthorization(row: DigiAiActionAuthorization) {
+    const idx = this.actionAuthorizations.findIndex((item) => item.authorizationId === row.authorizationId);
+    if (idx >= 0) this.actionAuthorizations[idx] = row;
+    else this.actionAuthorizations.push(row);
+  }
+
+  async getActionAuthorization(authorizationId: string) {
+    return this.actionAuthorizations.find((row) => row.authorizationId === authorizationId) ?? null;
+  }
+
+  async consumeActionAuthorization(input: { authorizationId: string; actorId: string; applicationId: string; tenantId?: string; now: string }) {
+    return this.withAuthorityLock(input.authorizationId, async () => {
+      const row = this.actionAuthorizations.find((item) => item.authorizationId === input.authorizationId);
+      if (!row) throw new DigiAiError(404, "not_found", "Action authorization was not found.");
+      if (row.actorId !== input.actorId || row.applicationId !== input.applicationId) {
+        throw new DigiAiError(403, "cross_tenant_forbidden", "That authorization is not visible to this caller.");
+      }
+      if (row.tenantId && input.tenantId && row.tenantId !== input.tenantId) {
+        throw new DigiAiError(403, "cross_tenant_forbidden", "That authorization is not visible to this tenant.");
+      }
+      if (row.status === "consumed") throw new DigiAiError(409, "AUTHORIZATION_CONSUMED", "Authorization has already been consumed.");
+      if (row.status === "invalidated") throw new DigiAiError(409, "AUTHORIZATION_INVALIDATED", "Authorization is no longer valid.");
+      if (row.status === "expired" || (row.expiresAt && row.expiresAt <= input.now)) {
+        row.status = "expired";
+        throw new DigiAiError(409, "AUTHORIZATION_EXPIRED", "Authorization has expired.");
+      }
+      row.status = "consumed";
+      row.consumedAt = input.now;
+      this.authorityAudit.push({
+        eventId: newId("aaud"),
+        eventType: "AUTHORIZATION_CONSUMED",
+        actionIntentId: row.actionIntentId,
+        authorizationId: row.authorizationId,
+        actorId: input.actorId,
+        createdAt: input.now,
+      });
+      return row;
+    });
+  }
+
+  async appendAuthorityAudit(row: AuthorityAuditEvent) {
+    this.authorityAudit.push(row);
+  }
+
+  async listAuthorityAudit(query?: { actionIntentId?: string; grantId?: string }) {
+    return this.authorityAudit.filter(
+      (row) => (!query?.actionIntentId || row.actionIntentId === query.actionIntentId) && (!query?.grantId || row.grantId === query.grantId),
+    );
+  }
+
+  private async withAuthorityLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.authorityLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.authorityLocks.set(key, previous.then(() => gate));
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
   }
 }
 

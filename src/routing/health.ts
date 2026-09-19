@@ -8,6 +8,7 @@ import { ProviderPool } from "../providers/pool.js";
 import { providerHealth } from "../providers/router.js";
 import type { DigiAiStore } from "../store/types.js";
 import { UnboundDrive, type DriveStatus, type SovereignDrive } from "../media/drive.js";
+import { AUTHORITY_POLICY_VERSION } from "../contracts/authority.js";
 import { commercialPolicyConfigured, listMeteringPolicies } from "../credits/policy.js";
 import { enabledVoiceProfileCount } from "../registry/voices.js";
 import { activePricingVersions } from "../usage/pricing-catalog.js";
@@ -144,6 +145,22 @@ export function buildHealthResponse(
       },
       economics: {
         mode: config.economicsMode,
+      },
+    },
+    authority: {
+      supported: true,
+      deterministic: true,
+      durable: (store?.authorityStatus() ?? ledger).durable,
+      backend: (store?.authorityStatus() ?? ledger).backend,
+      policy: {
+        loaded: true,
+        version: AUTHORITY_POLICY_VERSION,
+      },
+      externalActionExecution: {
+        supported: false,
+      },
+      consequentialAutomaticExecution: {
+        enabled: false,
       },
     },
   };

@@ -14,7 +14,9 @@ export function validatePlan(graph: PlannedGraph, bounds: { maxSteps: number; ma
   for (const step of graph.steps) {
     if (keys.has(step.stepKey)) throw new DigiAiError(400, "invalid_plan", `Duplicate step ${step.stepKey}.`);
     keys.add(step.stepKey);
-    if (!isCapabilityId(step.capability)) {
+    if (step.capability === "ACTION") {
+      if (!step.governedAction) throw new DigiAiError(400, "invalid_plan", "ACTION steps require a governed action.");
+    } else if (!isCapabilityId(step.capability)) {
       throw new DigiAiError(400, "invalid_plan", `Unknown capability ${String(step.capability)}.`);
     }
     if (step.provider || step.model) {

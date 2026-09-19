@@ -9,6 +9,16 @@ import type {
   CreditReservation,
   ReservationStatus,
 } from "../contracts/credits.js";
+import type {
+  AuthorityAuditEvent,
+  AuthorityOutcome,
+  AuthorityReason,
+  DigiAiActionAuthorization,
+  DigiAiActionIntent,
+  DigiAiAuthorityGrant,
+  DigiAiHumanDecision,
+  DigiAiHumanDecisionRequest,
+} from "../contracts/authority.js";
 import type { DigiAiExecutionPlan, DigiAiExecutionStep, DigiAiObjective } from "../contracts/orchestration.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus, UsageAggregate } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
@@ -138,4 +148,30 @@ export interface DigiAiStore {
   updateStep(stepId: string, patch: Partial<DigiAiExecutionStep>): Promise<DigiAiExecutionStep | null>;
   listSteps(objectiveId: string): Promise<DigiAiExecutionStep[]>;
   listObjectives(): Promise<DigiAiObjective[]>;
+  authorityStatus(): LedgerStatus;
+  putActionIntent(row: DigiAiActionIntent): Promise<void>;
+  getActionIntent(actionIntentId: string): Promise<DigiAiActionIntent | null>;
+  listActionIntents(objectiveId: string): Promise<DigiAiActionIntent[]>;
+  putAuthorityGrant(row: DigiAiAuthorityGrant): Promise<void>;
+  getAuthorityGrant(grantId: string): Promise<DigiAiAuthorityGrant | null>;
+  listAuthorityGrants(query: { actorId?: string; tenantId?: string }): Promise<DigiAiAuthorityGrant[]>;
+  reserveGrantOccurrence(grantId: string, now: string): Promise<
+    | { ok: true; grant: DigiAiAuthorityGrant }
+    | { ok: false; outcome: AuthorityOutcome; reason: AuthorityReason; message: string }
+  >;
+  putHumanDecision(row: DigiAiHumanDecision): Promise<void>;
+  listHumanDecisions(actionIntentId: string): Promise<DigiAiHumanDecision[]>;
+  putDecisionRequest(row: DigiAiHumanDecisionRequest): Promise<void>;
+  getDecisionRequest(decisionRequestId: string): Promise<DigiAiHumanDecisionRequest | null>;
+  putActionAuthorization(row: DigiAiActionAuthorization): Promise<void>;
+  getActionAuthorization(authorizationId: string): Promise<DigiAiActionAuthorization | null>;
+  consumeActionAuthorization(input: {
+    authorizationId: string;
+    actorId: string;
+    applicationId: string;
+    tenantId?: string;
+    now: string;
+  }): Promise<DigiAiActionAuthorization>;
+  appendAuthorityAudit(row: AuthorityAuditEvent): Promise<void>;
+  listAuthorityAudit(query?: { actionIntentId?: string; grantId?: string }): Promise<AuthorityAuditEvent[]>;
 }

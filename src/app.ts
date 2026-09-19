@@ -30,6 +30,19 @@ import type { LedgerQuery } from "./contracts/ledger.js";
 import { runEconomicAcceptance } from "./credits/acceptance.js";
 import { assertOperatorEconomics, readOwnCreditLedger, readOwnCreditSummary } from "./credits/query.js";
 import { reconcileCredits } from "./credits/reconcile.js";
+import { runAuthorityAcceptance } from "./authority/acceptance.js";
+import {
+  consumeAuthorization,
+  createGrant,
+  decideAction,
+  inspectAction,
+  inspectGrant,
+  parseActionBody,
+  parseDecisionBody,
+  parseGrantBody,
+  proposeAction,
+  revokeGrant,
+} from "./authority/service.js";
 import { runOrchestrationAcceptance } from "./orchestration/acceptance.js";
 import { advanceObjective, cancelObjective, createObjective, inspectObjective, parseObjectiveBody } from "./orchestration/engine.js";
 import { isOperatorCaller, readUsageReceipt, readUsageSummary, scopedLedgerQuery } from "./usage/query.js";
@@ -512,6 +525,126 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         allowFixture: !config.isProd || operator,
       });
       return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/v1/objectives/:objectiveId/actions", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const objectiveId = String((req.params as { objectiveId?: string }).objectiveId || "");
+      const body = parseActionBody(req.body);
+      const result = await proposeAction({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        body: { ...body, objectiveId },
+      });
+      return reply.send({ ok: true, service: "digi-ai", executed: false, ...result, intent: result.intent });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get("/v1/actions/:actionIntentId", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const result = await inspectAction({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        actionIntentId: String((req.params as { actionIntentId?: string }).actionIntentId || ""),
+      });
+      return reply.send({ ok: true, service: "digi-ai", executed: false, ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/v1/actions/:actionIntentId/decision", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const body = parseDecisionBody(req.body);
+      const result = await decideAction({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        actionIntentId: String((req.params as { actionIntentId?: string }).actionIntentId || ""),
+        ...body,
+      });
+      return reply.send({ ok: true, service: "digi-ai", executed: false, ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/v1/authority/grants", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const body = parseGrantBody(req.body);
+      const grant = await createGrant({ store, actor: identity.actor, caller: identity.caller, ...body });
+      return reply.send({ ok: true, service: "digi-ai", grant });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get("/v1/authority/grants/:grantId", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const grant = await inspectGrant({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        grantId: String((req.params as { grantId?: string }).grantId || ""),
+      });
+      return reply.send({ ok: true, service: "digi-ai", grant });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/v1/authority/grants/:grantId/revoke", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const grant = await revokeGrant({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        grantId: String((req.params as { grantId?: string }).grantId || ""),
+      });
+      return reply.send({ ok: true, service: "digi-ai", grant });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/authority/consume", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const body = (req.body ?? {}) as { authorizationId?: string };
+      if (!body.authorizationId) throw new DigiAiError(400, "invalid_request", "authorizationId is required.");
+      const authorization = await consumeAuthorization({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        authorizationId: body.authorizationId,
+      });
+      return reply.send({ ok: true, service: "digi-ai", executed: false, authorization });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/authority/acceptance", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      if (config.isProd && !isOperatorCaller(config, identity.caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for authority acceptance.");
+      }
+      const result = await runAuthorityAcceptance({ store, actor: identity.actor, caller: identity.caller });
+      return reply.send({ service: "digi-ai", ...result });
     } catch (err) {
       return sendError(reply, err);
     }

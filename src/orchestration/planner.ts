@@ -1,12 +1,13 @@
 import { isCapabilityId, type CapabilityId } from "../contracts/capabilities.js";
 import type { BindingSource, OrchestrationFixture, OutputBinding } from "../contracts/orchestration.js";
+import type { DigiAiExecutionStep } from "../contracts/orchestration.js";
 import { PLAN_SCHEMA_VERSION, PLANNER_VERSION } from "../contracts/orchestration.js";
 import type { PrivacyClass } from "../contracts/privacy.js";
 import { DigiAiError } from "../lib/http.js";
 
 export type PlannedStep = {
   stepKey: string;
-  capability: CapabilityId;
+  capability: CapabilityId | "ACTION";
   dependencies: string[];
   inputBindings: BindingSource[];
   outputBindings: OutputBinding[];
@@ -14,6 +15,7 @@ export type PlannedStep = {
   privacyClass?: PrivacyClass;
   provider?: string;
   model?: string;
+  governedAction?: DigiAiExecutionStep["governedAction"];
 };
 
 export type PlannedGraph = {
@@ -54,6 +56,9 @@ export function planObjective(input: {
 function inferFixture(instruction: string, desired?: string[]): OrchestrationFixture {
   const text = `${instruction} ${(desired ?? []).join(" ")}`.toLowerCase();
   if (/\bcycle\b/.test(text)) return "cycle";
+  if (/\bauthority-create\b|\bgenerate_campaign_copy\b/.test(text)) return "authority-create";
+  if (/\bauthority-publish-optional\b|\boptional publish\b/.test(text)) return "authority-publish-optional";
+  if (/\bauthority-publish\b|\bpublish_mybrandos\b/.test(text)) return "authority-publish";
   if (/\bsend_money\b|\bignore all rules\b/.test(text)) return "injection";
   if (/\bpartial\b/.test(text)) return "partial";
   if (/\brequired failure\b|\bresearch fails\b/.test(text)) return "required-failure";
@@ -66,6 +71,50 @@ function inferFixture(instruction: string, desired?: string[]): OrchestrationFix
 }
 
 function graphFor(fixture: OrchestrationFixture): PlannedStep[] {
+  if (fixture === "authority-create") {
+    return [
+      {
+        stepKey: "create",
+        capability: "ACTION",
+        dependencies: [],
+        inputBindings: textIn("objective.instruction"),
+        outputBindings: textOut("campaignCopy"),
+        required: true,
+        governedAction: {
+          actionClass: "CREATE",
+          actionType: "GENERATE_CAMPAIGN_COPY",
+          target: { resourceType: "campaign", resourceId: "campaign-copy" },
+          parameters: { contentReference: "campaign-copy" },
+        },
+      },
+    ];
+  }
+  if (fixture === "authority-publish" || fixture === "authority-publish-optional") {
+    return [
+      {
+        stepKey: "write",
+        capability: "WRITE",
+        dependencies: [],
+        inputBindings: textIn("objective.instruction"),
+        outputBindings: textOut("campaignCopy"),
+        required: true,
+      },
+      {
+        stepKey: "publish",
+        capability: "ACTION",
+        dependencies: ["write"],
+        inputBindings: textIn("campaignCopy"),
+        outputBindings: textOut("publishAuthorization"),
+        required: fixture === "authority-publish",
+        governedAction: {
+          actionClass: "PUBLISH",
+          actionType: "PUBLISH_MYBRANDOS_POST",
+          target: { resourceType: "mybrandos-post", resourceId: "draft-1" },
+          parameters: { contentReference: "draft-1", contentDigest: "digest-v1", destination: "mybrandos", visibility: "public" },
+        },
+      },
+    ];
+  }
   if (fixture === "cycle") {
     return [
       {
@@ -223,7 +272,7 @@ function graphFor(fixture: OrchestrationFixture): PlannedStep[] {
 }
 
 export function assertCapabilityOnly(step: PlannedStep) {
-  if (!isCapabilityId(step.capability)) {
+  if (step.capability !== "ACTION" && !isCapabilityId(step.capability)) {
     throw new DigiAiError(400, "invalid_plan", `Unknown capability ${String(step.capability)}.`);
   }
   if (step.provider || step.model) {

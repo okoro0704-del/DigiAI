@@ -124,6 +124,7 @@ export function loadConfig() {
     sovereignDriveTimeoutMs: Number(env("SOVEREIGN_DRIVE_TIMEOUT_MS", "45000")),
     newsLimit: Number(env("DIGINEWS_LIMIT", "8")),
     economicsMode: parseEconomicsMode(env("DIGI_AI_ECONOMICS_MODE", "observe")),
+    authorityMode: parseEconomicsMode(env("DIGI_AI_AUTHORITY_MODE", "observe")),
     orchestrationMaxSteps: Number(env("DIGI_AI_ORCH_MAX_STEPS", "8")),
     orchestrationMaxDepth: Number(env("DIGI_AI_ORCH_MAX_DEPTH", "4")),
     orchestrationMaxParallelSteps: Number(env("DIGI_AI_ORCH_MAX_PARALLEL", "2")),

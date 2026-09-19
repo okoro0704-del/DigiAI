@@ -1,3 +1,4 @@
+import type { ActionClass, ActionParameters, ActionTarget, ActionType } from "./authority.js";
 import type { CapabilityId } from "./capabilities.js";
 import type { PrivacyClass } from "./privacy.js";
 
@@ -6,6 +7,7 @@ export const OBJECTIVE_STATUSES = [
   "PLANNED",
   "RUNNING",
   "WAITING",
+  "WAITING_FOR_HUMAN",
   "COMPLETED",
   "PARTIAL",
   "FAILED",
@@ -13,7 +15,7 @@ export const OBJECTIVE_STATUSES = [
 ] as const;
 export type ObjectiveStatus = (typeof OBJECTIVE_STATUSES)[number];
 
-export const STEP_STATUSES = ["PENDING", "RUNNING", "WAITING", "COMPLETED", "FAILED", "CANCELLED", "SKIPPED"] as const;
+export const STEP_STATUSES = ["PENDING", "RUNNING", "WAITING", "WAITING_FOR_HUMAN", "COMPLETED", "FAILED", "CANCELLED", "SKIPPED"] as const;
 export type StepStatus = (typeof STEP_STATUSES)[number];
 
 export const OUTPUT_KINDS = ["TEXT", "STRUCTURED_DATA", "MEDIA", "ASSET_REFERENCE"] as const;
@@ -30,7 +32,10 @@ export type OrchestrationFixture =
   | "required-failure"
   | "injection"
   | "cycle"
-  | "cancel";
+  | "cancel"
+  | "authority-create"
+  | "authority-publish"
+  | "authority-publish-optional";
 
 export type BindingSource = {
   from: string;
@@ -63,7 +68,16 @@ export type DigiAiExecutionStep = {
   stepKey: string;
   objectiveId: string;
   planId: string;
-  capability: CapabilityId;
+  capability: CapabilityId | "ACTION";
+  governedAction?: {
+    actionClass: ActionClass;
+    additionalClasses?: ActionClass[];
+    actionType: ActionType;
+    target: ActionTarget;
+    parameters: ActionParameters;
+  };
+  actionIntentId?: string;
+  authorizationId?: string;
   dependencies: string[];
   inputBindings: BindingSource[];
   outputBindings: OutputBinding[];

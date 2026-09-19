@@ -20,6 +20,7 @@ import { resolveStepMessage } from "./bindings.js";
 import { orchestrationLimits } from "./limits.js";
 import { planObjective } from "./planner.js";
 import { strictestPrivacy } from "./privacy.js";
+import { invalidateObjectiveAuthorizations, proposeAction } from "../authority/service.js";
 import { readySteps, validatePlan } from "./validate.js";
 
 const TEXT_LIMIT = 2000;
@@ -106,7 +107,9 @@ export async function createObjective(input: {
 
   let estimated = 0;
   for (const planned of graph.steps) {
-    const estimate = estimateDigiAiUnits({ capability: planned.capability, message: objective.instruction });
+    const estimate = planned.capability === "ACTION"
+      ? { units: 0 }
+      : estimateDigiAiUnits({ capability: planned.capability, message: objective.instruction });
     estimated += estimate.units;
     const step: DigiAiExecutionStep = {
       stepId: newId("ostep"),
@@ -114,12 +117,13 @@ export async function createObjective(input: {
       objectiveId: objective.objectiveId,
       planId: plan.planId,
       capability: planned.capability,
+      governedAction: planned.governedAction,
       dependencies: planned.dependencies,
       inputBindings: planned.inputBindings,
       outputBindings: planned.outputBindings,
       privacyClass: strictestPrivacy([privacy, planned.privacyClass ?? privacy]),
       required: planned.required,
-      executionClass: "AUTOMATIC",
+      executionClass: planned.capability === "ACTION" ? "HUMAN_DECISION_REQUIRED" : "AUTOMATIC",
       status: "PENDING",
       attemptCount: 0,
       maxAttempts: limits.maxStepAttempts,
@@ -157,13 +161,13 @@ export async function cancelObjective(input: {
   objective.remoteCancellationConfirmed = false;
   const steps = await input.store.listSteps(objective.objectiveId);
   for (const step of steps) {
-    if (step.status === "PENDING") {
+    if (step.status === "PENDING" || step.status === "WAITING_FOR_HUMAN") {
       await input.store.updateStep(step.stepId, { status: "CANCELLED", completedAt: nowIso(), error: "cancelled" });
     }
   }
+  await invalidateObjectiveAuthorizations(input.store, objective.objectiveId, input.actor.trustId);
   const next = await input.store.listSteps(objective.objectiveId);
-  const running = next.some((row) => row.status === "RUNNING" || row.status === "WAITING");
-  objective.status = running ? "CANCELLED" : "CANCELLED";
+  objective.status = "CANCELLED";
   objective.updatedAt = nowIso();
   await input.store.putObjective(objective);
   return buildResult(objective, next, input.store);
@@ -212,11 +216,12 @@ async function runObjective(
     const ready = [
       ...readySteps(steps),
       ...steps.filter((row) => row.status === "WAITING"),
+      ...steps.filter((row) => row.status === "WAITING_FOR_HUMAN" && row.authorizationId),
     ].slice(0, input.deps.config.orchestrationMaxParallelSteps);
     if (!ready.length) break;
     await Promise.all(ready.map((step) => executeStep(input, objective, step, steps)));
     const after = await input.deps.store.listSteps(objectiveId);
-    if (after.some((row) => row.status === "WAITING")) break;
+    if (after.some((row) => row.status === "WAITING" || (row.status === "WAITING_FOR_HUMAN" && !row.authorizationId))) break;
   }
 
   const latest = (await input.deps.store.getObjective(objectiveId))!;
@@ -240,10 +245,14 @@ async function executeStep(
   all: DigiAiExecutionStep[],
 ) {
   if (step.status === "COMPLETED") return;
+  if (step.capability === "ACTION" || step.governedAction) {
+    await executeGovernedAction(input, objective, step);
+    return;
+  }
   if (step.executionClass === "HUMAN_DECISION_REQUIRED") {
     await input.deps.store.updateStep(step.stepId, {
       status: "FAILED",
-      error: "Human decision required. Phase 3B does not grant that authority.",
+      error: "Human decision required. No governed action was attached.",
       completedAt: nowIso(),
     });
     return;
@@ -373,8 +382,88 @@ async function executeFixture(store: DigiAiStore, objective: DigiAiObjective, st
   });
 }
 
+async function executeGovernedAction(
+  input: {
+    deps: EngineDeps;
+    actor: ActorContext;
+    caller: CallerApplication;
+  },
+  objective: DigiAiObjective,
+  step: DigiAiExecutionStep,
+) {
+  if (step.status === "WAITING_FOR_HUMAN" && !step.authorizationId) return;
+  if (step.authorizationId) {
+    await input.deps.store.updateStep(step.stepId, {
+      status: "COMPLETED",
+      completedAt: nowIso(),
+      output: {
+        name: step.outputBindings[0]?.name ?? "authorization",
+        kind: "STRUCTURED_DATA",
+        data: { authorizationId: step.authorizationId, executed: false, note: "Authority issued. External action was not executed." },
+        generated: false,
+        retrieved: false,
+        stepId: step.stepId,
+        capability: "ACTION",
+      },
+    });
+    return;
+  }
+  const governed = step.governedAction;
+  if (!governed) {
+    await input.deps.store.updateStep(step.stepId, { status: "FAILED", error: "missing_governed_action", completedAt: nowIso() });
+    return;
+  }
+  const proposed = await proposeAction({
+    store: input.deps.store,
+    actor: input.actor,
+    caller: input.caller,
+    body: {
+      objectiveId: objective.objectiveId,
+      planId: step.planId,
+      stepId: step.stepId,
+      actionClass: governed.actionClass,
+      additionalClasses: governed.additionalClasses,
+      actionType: governed.actionType,
+      target: { ...governed.target, tenantId: objective.tenantId ?? governed.target.tenantId },
+      parameters: governed.parameters,
+    },
+  });
+  if (proposed.authorization) {
+    await input.deps.store.updateStep(step.stepId, {
+      status: "COMPLETED",
+      actionIntentId: proposed.intent.actionIntentId,
+      authorizationId: proposed.authorization.authorizationId,
+      completedAt: nowIso(),
+      output: {
+        name: step.outputBindings[0]?.name ?? "authorization",
+        kind: "STRUCTURED_DATA",
+        data: { authorizationId: proposed.authorization.authorizationId, executed: false, note: "Authority issued. External action was not executed." },
+        generated: false,
+        retrieved: false,
+        stepId: step.stepId,
+        capability: "ACTION",
+      },
+    });
+    return;
+  }
+  if (proposed.intent.status === "HUMAN_DECISION_REQUIRED") {
+    await input.deps.store.updateStep(step.stepId, {
+      status: "WAITING_FOR_HUMAN",
+      actionIntentId: proposed.intent.actionIntentId,
+    });
+    return;
+  }
+  await input.deps.store.updateStep(step.stepId, {
+    status: "FAILED",
+    actionIntentId: proposed.intent.actionIntentId,
+    error: proposed.decision?.reasonCode ?? "authority_denied",
+    completedAt: nowIso(),
+  });
+}
+
 function deriveStatus(objective: DigiAiObjective, steps: DigiAiExecutionStep[]): DigiAiObjective["status"] {
   if (objective.cancelRequested) return "CANCELLED";
+  if (steps.some((row) => row.status === "WAITING_FOR_HUMAN")) return "WAITING_FOR_HUMAN";
   if (steps.some((row) => row.status === "WAITING")) return "WAITING";
   if (steps.some((row) => row.status === "RUNNING")) return "RUNNING";
   const requiredFailed = steps.some((row) => row.required && row.status === "FAILED");
@@ -517,6 +606,9 @@ function isFixture(value: string): value is OrchestrationFixture {
     "injection",
     "cycle",
     "cancel",
+    "authority-create",
+    "authority-publish",
+    "authority-publish-optional",
   ].includes(value);
 }
 

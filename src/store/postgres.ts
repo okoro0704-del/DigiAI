@@ -9,6 +9,14 @@ import type {
   CreditReservation,
   ReservationStatus,
 } from "../contracts/credits.js";
+import type {
+  AuthorityAuditEvent,
+  DigiAiActionAuthorization,
+  DigiAiActionIntent,
+  DigiAiAuthorityGrant,
+  DigiAiHumanDecision,
+  DigiAiHumanDecisionRequest,
+} from "../contracts/authority.js";
 import type { DigiAiExecutionPlan, DigiAiExecutionStep, DigiAiObjective } from "../contracts/orchestration.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
@@ -152,6 +160,53 @@ CREATE TABLE IF NOT EXISTS ai_execution_steps (
   payload JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (objective_id, step_key)
+);
+CREATE TABLE IF NOT EXISTS ai_action_intents (
+  action_intent_id TEXT PRIMARY KEY,
+  objective_id TEXT,
+  actor_id TEXT NOT NULL,
+  tenant_id TEXT,
+  application_id TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_authority_grants (
+  grant_id TEXT PRIMARY KEY,
+  grantor_actor_id TEXT NOT NULL,
+  tenant_id TEXT,
+  consumed_occurrences INTEGER NOT NULL DEFAULT 0,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_human_decisions (
+  decision_id TEXT PRIMARY KEY,
+  action_intent_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_decision_requests (
+  decision_request_id TEXT PRIMARY KEY,
+  action_intent_id TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_action_authorizations (
+  authorization_id TEXT PRIMARY KEY,
+  action_intent_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  tenant_id TEXT,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_authority_audit (
+  event_id TEXT PRIMARY KEY,
+  action_intent_id TEXT,
+  grant_id TEXT,
+  event_type TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 `;
 
@@ -905,6 +960,173 @@ export class PostgresStore implements DigiAiStore {
     await this.ready();
     const result = await this.pool.query(`SELECT payload FROM ai_objectives ORDER BY created_at ASC`);
     return result.rows.map((row) => row.payload as DigiAiObjective);
+  }
+
+  authorityStatus(): LedgerStatus {
+    return this.ledgerStatus();
+  }
+
+  async putActionIntent(row: DigiAiActionIntent) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_action_intents (action_intent_id, objective_id, actor_id, tenant_id, application_id, payload, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)
+       ON CONFLICT (action_intent_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      [row.actionIntentId, row.objectiveId ?? null, row.actorId, row.tenantId ?? null, row.applicationId, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async getActionIntent(actionIntentId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_action_intents WHERE action_intent_id = $1`, [actionIntentId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiActionIntent) : null;
+  }
+
+  async listActionIntents(objectiveId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_action_intents WHERE objective_id = $1`, [objectiveId]);
+    return result.rows.map((row) => row.payload as DigiAiActionIntent);
+  }
+
+  async putAuthorityGrant(row: DigiAiAuthorityGrant) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_authority_grants (grant_id, grantor_actor_id, tenant_id, consumed_occurrences, payload, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$6)
+       ON CONFLICT (grant_id) DO UPDATE SET payload = EXCLUDED.payload, consumed_occurrences = EXCLUDED.consumed_occurrences, updated_at = now()`,
+      [row.grantId, row.grantorActorId, row.tenantId ?? null, row.consumedOccurrences, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async getAuthorityGrant(grantId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_authority_grants WHERE grant_id = $1`, [grantId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiAuthorityGrant) : null;
+  }
+
+  async listAuthorityGrants(query: { actorId?: string; tenantId?: string }) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_authority_grants`);
+    return result.rows
+      .map((row) => row.payload as DigiAiAuthorityGrant)
+      .filter((row) => (!query.actorId || row.grantorActorId === query.actorId || row.scope.actorId === query.actorId) && (!query.tenantId || !row.tenantId || row.tenantId === query.tenantId));
+  }
+
+  async reserveGrantOccurrence(grantId: string, now: string) {
+    return this.withCreditTx(async (client) => {
+      const found = await client.query(`SELECT payload, consumed_occurrences FROM ai_authority_grants WHERE grant_id = $1 FOR UPDATE`, [grantId]);
+      if (!found.rows[0]) return { ok: false as const, outcome: "INVALID" as const, reason: "MALFORMED_GRANT" as const, message: "Grant was not found." };
+      const grant = found.rows[0].payload as DigiAiAuthorityGrant;
+      grant.consumedOccurrences = Number(found.rows[0].consumed_occurrences ?? grant.consumedOccurrences);
+      if (grant.status === "revoked" || grant.revokedAt) {
+        return { ok: false as const, outcome: "REVOKED" as const, reason: "GRANT_REVOKED" as const, message: "Grant has been revoked." };
+      }
+      if ((grant.expiresAt && grant.expiresAt <= now) || grant.status === "expired") {
+        grant.status = "expired";
+        await client.query(`UPDATE ai_authority_grants SET payload = $2::jsonb, updated_at = now() WHERE grant_id = $1`, [grantId, JSON.stringify(grant)]);
+        return { ok: false as const, outcome: "EXPIRED" as const, reason: "GRANT_EXPIRED" as const, message: "Grant has expired." };
+      }
+      if (grant.limits.maxOccurrences != null && grant.consumedOccurrences >= grant.limits.maxOccurrences) {
+        return { ok: false as const, outcome: "DENIED" as const, reason: "OCCURRENCE_LIMIT_EXCEEDED" as const, message: "Grant occurrence limit has been consumed." };
+      }
+      grant.consumedOccurrences += 1;
+      await client.query(
+        `UPDATE ai_authority_grants SET payload = $2::jsonb, consumed_occurrences = $3, updated_at = now() WHERE grant_id = $1`,
+        [grantId, JSON.stringify(grant), grant.consumedOccurrences],
+      );
+      return { ok: true as const, grant };
+    });
+  }
+
+  async putHumanDecision(row: DigiAiHumanDecision) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_human_decisions (decision_id, action_intent_id, actor_id, payload, created_at) VALUES ($1,$2,$3,$4::jsonb,$5)`,
+      [row.decisionId, row.actionIntentId, row.actorId, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async listHumanDecisions(actionIntentId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_human_decisions WHERE action_intent_id = $1 ORDER BY created_at ASC`, [actionIntentId]);
+    return result.rows.map((row) => row.payload as DigiAiHumanDecision);
+  }
+
+  async putDecisionRequest(row: DigiAiHumanDecisionRequest) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_decision_requests (decision_request_id, action_intent_id, payload, created_at)
+       VALUES ($1,$2,$3::jsonb,$4)
+       ON CONFLICT (decision_request_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      [row.decisionRequestId, row.actionIntentId, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async getDecisionRequest(decisionRequestId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_decision_requests WHERE decision_request_id = $1`, [decisionRequestId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiHumanDecisionRequest) : null;
+  }
+
+  async putActionAuthorization(row: DigiAiActionAuthorization) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_action_authorizations (authorization_id, action_intent_id, actor_id, tenant_id, payload, created_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6)
+       ON CONFLICT (authorization_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      [row.authorizationId, row.actionIntentId, row.actorId, row.tenantId ?? null, JSON.stringify(row), row.issuedAt],
+    );
+  }
+
+  async getActionAuthorization(authorizationId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_action_authorizations WHERE authorization_id = $1`, [authorizationId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiActionAuthorization) : null;
+  }
+
+  async consumeActionAuthorization(input: { authorizationId: string; actorId: string; applicationId: string; tenantId?: string; now: string }) {
+    return this.withCreditTx(async (client) => {
+      const found = await client.query(`SELECT payload FROM ai_action_authorizations WHERE authorization_id = $1 FOR UPDATE`, [input.authorizationId]);
+      if (!found.rows[0]) throw new DigiAiError(404, "not_found", "Action authorization was not found.");
+      const row = found.rows[0].payload as DigiAiActionAuthorization;
+      if (row.actorId !== input.actorId || row.applicationId !== input.applicationId) {
+        throw new DigiAiError(403, "cross_tenant_forbidden", "That authorization is not visible to this caller.");
+      }
+      if (row.tenantId && input.tenantId && row.tenantId !== input.tenantId) {
+        throw new DigiAiError(403, "cross_tenant_forbidden", "That authorization is not visible to this tenant.");
+      }
+      if (row.status === "consumed") throw new DigiAiError(409, "AUTHORIZATION_CONSUMED", "Authorization has already been consumed.");
+      if (row.status === "invalidated") throw new DigiAiError(409, "AUTHORIZATION_INVALIDATED", "Authorization is no longer valid.");
+      if (row.status === "expired" || (row.expiresAt && row.expiresAt <= input.now)) {
+        row.status = "expired";
+        await client.query(`UPDATE ai_action_authorizations SET payload = $2::jsonb WHERE authorization_id = $1`, [input.authorizationId, JSON.stringify(row)]);
+        throw new DigiAiError(409, "AUTHORIZATION_EXPIRED", "Authorization has expired.");
+      }
+      row.status = "consumed";
+      row.consumedAt = input.now;
+      await client.query(`UPDATE ai_action_authorizations SET payload = $2::jsonb WHERE authorization_id = $1`, [input.authorizationId, JSON.stringify(row)]);
+      await client.query(
+        `INSERT INTO ai_authority_audit (event_id, action_intent_id, grant_id, event_type, payload, created_at) VALUES ($1,$2,null,$3,$4::jsonb,$5)`,
+        [newId("aaud"), row.actionIntentId, "AUTHORIZATION_CONSUMED", JSON.stringify({ eventType: "AUTHORIZATION_CONSUMED", authorizationId: row.authorizationId, actorId: input.actorId }), input.now],
+      );
+      return row;
+    });
+  }
+
+  async appendAuthorityAudit(row: AuthorityAuditEvent) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_authority_audit (event_id, action_intent_id, grant_id, event_type, payload, created_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6)`,
+      [row.eventId, row.actionIntentId ?? null, row.grantId ?? null, row.eventType, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async listAuthorityAudit(query?: { actionIntentId?: string; grantId?: string }) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_authority_audit ORDER BY created_at ASC`);
+    return result.rows
+      .map((row) => row.payload as AuthorityAuditEvent)
+      .filter((row) => (!query?.actionIntentId || row.actionIntentId === query.actionIntentId) && (!query?.grantId || row.grantId === query.grantId));
   }
 }
 

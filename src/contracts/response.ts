@@ -181,4 +181,20 @@ export type HealthResponse = {
       mode: EconomicsMode;
     };
   };
+  authority?: {
+    supported: boolean;
+    deterministic: boolean;
+    durable: boolean;
+    backend: "memory" | "postgres" | "file";
+    policy: {
+      loaded: boolean;
+      version: string;
+    };
+    externalActionExecution: {
+      supported: false;
+    };
+    consequentialAutomaticExecution: {
+      enabled: false;
+    };
+  };
 };
