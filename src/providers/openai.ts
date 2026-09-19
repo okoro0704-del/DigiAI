@@ -1,3 +1,4 @@
+import { classifyProviderHttpError } from "./errors.js";
 import type { IntelligenceProvider, ProviderInvokeRequest, ProviderResult } from "./types.js";
 
 type OpenAiChatResponse = {
@@ -37,12 +38,16 @@ export class OpenAiProvider implements IntelligenceProvider {
       });
       const latencyMs = Date.now() - started;
       if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as {
+          error?: { type?: string; code?: string; message?: string };
+        } | null;
+        const classified = classifyProviderHttpError(res.status, body);
         return {
           ok: false,
           provider: this.name,
           model: this.model,
-          error: "provider_error",
-          detail: `Provider request failed (${res.status}).`,
+          error: classified.error,
+          detail: classified.detail,
           latencyMs,
         };
       }

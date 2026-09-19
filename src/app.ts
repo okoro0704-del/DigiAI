@@ -2,11 +2,13 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import type { AppConfig } from "./config.js";
 import { CONTEXT_SOURCES, isContextSourceId, isDigiAiMode, type DigiAiAskInput } from "./contracts/request.js";
 import type { HealthResponse } from "./contracts/response.js";
+import type { TwinBriefInput, TwinOwnerActivity } from "./contracts/twin.js";
 import { HttpDigiNewsReader } from "./adapters/diginews.js";
 import { HttpDigiPediaReader } from "./adapters/digipedia.js";
 import type { DigiNewsReader, DigiPediaReader } from "./adapters/types.js";
 import { createTrustIdResolver, resolveRequestIdentity, type IdentityResolver } from "./identity/resolve.js";
 import { handleAsk } from "./intelligence/engine.js";
+import { handleTwinBrief } from "./intelligence/twin-brief.js";
 import { newId } from "./lib/crypto.js";
 import { DigiAiError } from "./lib/http.js";
 import { createProvider, providerHealth } from "./providers/router.js";
@@ -50,6 +52,23 @@ function parseAskBody(raw: unknown, maxMessage: number, maxSupplied: number): Di
     entity,
     suppliedContext: supplied,
     draft,
+    correlationId: typeof body.correlationId === "string" ? body.correlationId : undefined,
+    actor,
+  };
+}
+
+function parseTwinBriefBody(raw: unknown): TwinBriefInput {
+  if (!raw || typeof raw !== "object") throw new DigiAiError(400, "invalid_request", "JSON body is required.");
+  const body = raw as Record<string, unknown>;
+  const entity = body.entity && typeof body.entity === "object" ? (body.entity as TwinBriefInput["entity"]) : undefined;
+  const ownerContext =
+    body.ownerContext && typeof body.ownerContext === "object"
+      ? (body.ownerContext as TwinOwnerActivity)
+      : undefined;
+  const actor = body.actor && typeof body.actor === "object" ? (body.actor as TwinBriefInput["actor"]) : undefined;
+  return {
+    entity,
+    ownerContext,
     correlationId: typeof body.correlationId === "string" ? body.correlationId : undefined,
     actor,
   };
@@ -116,6 +135,46 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         service: "digi-ai",
         error: "internal_error",
         message: "Digi AI could not complete that request.",
+      });
+    }
+  });
+
+  app.post("/v1/twin/brief", async (req: FastifyRequest, reply: FastifyReply) => {
+    const requestId = newId("req");
+    try {
+      const body = parseTwinBriefBody(req.body);
+      const identity = await resolveRequestIdentity({
+        config,
+        headers: req.headers,
+        url: req.url,
+        attestedTrustId: body.actor?.trustId,
+        attestedDisplayName: body.actor?.displayName,
+        resolver,
+      });
+      const result = await handleTwinBrief({
+        deps,
+        actor: identity.actor,
+        caller: identity.caller,
+        body,
+        requestId,
+      });
+      return reply.code(200).send(result);
+    } catch (err) {
+      if (err instanceof DigiAiError) {
+        return reply.code(err.status).send({
+          ok: false,
+          service: "digi-ai",
+          experience: "digi-twin",
+          error: err.code,
+          message: err.message,
+        });
+      }
+      return reply.code(500).send({
+        ok: false,
+        service: "digi-ai",
+        experience: "digi-twin",
+        error: "internal_error",
+        message: "Digi AI could not complete that briefing.",
       });
     }
   });

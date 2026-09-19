@@ -37,6 +37,7 @@ export type NewsItem = {
   canonicalUrl: string;
   publisher: { entityId: string; displayName: string; href: string | null };
   subjects: Array<{ entityId: string; displayName: string }>;
+  relation?: "self" | "third_party";
   source: SourceReference;
 };
 

@@ -7,6 +7,7 @@ import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
 import type { DigiNewsReader, DigiPediaReader, NewsPage, DigiPediaPage } from "../adapters/types.js";
 import { clip, newId, nowIso } from "../lib/crypto.js";
 import { DigiAiError } from "../lib/http.js";
+import { requireSlug } from "../lib/slug.js";
 import { SYSTEM_POLICY, wrapCanonicalData } from "../lib/policy.js";
 import type { IntelligenceProvider } from "../providers/types.js";
 import type { DigiAiStore } from "../store/memory.js";
@@ -236,15 +237,6 @@ export async function handleAsk(input: {
     receiptId,
     objectiveCandidate,
   };
-}
-
-function requireSlug(slug: string | undefined, label: string): string {
-  const value = slug?.trim().toLowerCase();
-  if (!value) throw new DigiAiError(400, "entity_required", `${label} retrieval requires an entity slug.`);
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) {
-    throw new DigiAiError(400, "invalid_entity", "Entity slug is invalid.");
-  }
-  return value;
 }
 
 function appendDigiPedia(page: DigiPediaPage, provenance: ProvenanceItem[], userParts: string[]) {

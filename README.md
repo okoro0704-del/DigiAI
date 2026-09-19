@@ -31,6 +31,12 @@ Not stored:
 - DigiPedia entries
 - DigiNews publications
 
+## Digi Twin briefing
+
+`POST /v1/twin/brief` is a structured “What’s popping?” capability. Digi Twin is a human-facing experience powered by Digi AI, not a second backend.
+
+An authorized application (currently mybrandOS) must resolve the Digital Life from the Trust ID session and supply owner-authorized activity. Digi AI then reads public DigiPedia and DigiNews by that authorized slug. Factual sections are returned even when model inference is unavailable. Interpretations are labeled separately and are never treated as canonical knowledge.
+
 ## Health
 
 `GET /health` reports service liveness and whether a provider is configured. An unbound provider does not mark the service down.

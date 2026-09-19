@@ -19,7 +19,7 @@ export type ProviderFailure = {
   ok: false;
   provider: string;
   model?: string;
-  error: "unavailable" | "timeout" | "provider_error" | "empty";
+  error: "unavailable" | "timeout" | "provider_error" | "empty" | "quota" | "billing" | "rate_limited" | "auth_failed";
   detail: string;
   latencyMs: number;
 };
