@@ -38,6 +38,7 @@ import type { IntelligenceProvider, ProviderResult } from "../providers/types.js
 import { executeWithFailover } from "../routing/execute.js";
 import { resolveRequestedCapability } from "../routing/resolve-capability.js";
 import { routeCapability } from "../routing/runtime.js";
+import { attachEconomics, createEconomySession, type EconomySession } from "../credits/lifecycle.js";
 import { buildLedgerEntry, usageFromLedger } from "../usage/ledger.js";
 import { persistExecution } from "../usage/persist.js";
 import { buildRequestReceipt, buildUsageRecord, nativeUsageFromTokens, snapshotFromRecord } from "../usage/receipt.js";
@@ -257,75 +258,100 @@ export async function handleAsk(input: {
     };
   }
 
+  const economy = createEconomySession({
+    store: deps.store,
+    config: deps.config,
+    actor,
+    caller,
+    entitySlug: entity.slug,
+    requestId,
+    idempotencyKey: body.idempotencyKey,
+    capability,
+    constraints: body.constraints,
+    message,
+  });
+
   if (capability === "VIDEO") {
-    return handleVideoAsk({
-      deps,
-      actor,
-      caller,
-      body,
-      requestId,
-      accessToken,
-      correlationId,
-      capability,
-      privacyClass,
-      operation: (operation === "image_to_video" ? "image_to_video" : "generate") as VideoOperation,
-      sources,
-      provenance,
-      sourceUnavailable,
-      startedAt,
-      drive,
-      tenantId,
-      pool,
-      forceProvider,
-    });
+    return attachEconomics(
+      await handleVideoAsk({
+        deps,
+        actor,
+        caller,
+        body,
+        requestId,
+        accessToken,
+        correlationId,
+        capability,
+        privacyClass,
+        operation: (operation === "image_to_video" ? "image_to_video" : "generate") as VideoOperation,
+        sources,
+        provenance,
+        sourceUnavailable,
+        startedAt,
+        drive,
+        tenantId,
+        pool,
+        forceProvider,
+        economy,
+      }),
+      economy.snapshot(),
+    );
   }
 
   if (capability === "MUSIC") {
-    return handleMusicAsk({
-      deps,
-      actor,
-      caller,
-      body,
-      requestId,
-      accessToken,
-      correlationId,
-      capability,
-      privacyClass,
-      operation: "compose",
-      sources,
-      provenance,
-      sourceUnavailable,
-      startedAt,
-      drive,
-      tenantId,
-      pool,
-      forceProvider,
-    });
+    return attachEconomics(
+      await handleMusicAsk({
+        deps,
+        actor,
+        caller,
+        body,
+        requestId,
+        accessToken,
+        correlationId,
+        capability,
+        privacyClass,
+        operation: "compose",
+        sources,
+        provenance,
+        sourceUnavailable,
+        startedAt,
+        drive,
+        tenantId,
+        pool,
+        forceProvider,
+        economy,
+      }),
+      economy.snapshot(),
+    );
   }
 
   if (capability === "SPEECH_TO_TEXT" || capability === "TEXT_TO_SPEECH" || capability === "VOICE") {
-    return handleSpeechAsk({
-      deps,
-      actor,
-      caller,
-      body,
-      requestId,
-      accessToken,
-      correlationId,
-      capability,
-      privacyClass,
-      operation: operation ?? (capability === "TEXT_TO_SPEECH" ? "speak" : capability === "VOICE" ? "converse" : "transcribe"),
-      sources,
-      provenance,
-      userParts,
-      sourceUnavailable,
-      startedAt,
-      drive,
-      tenantId,
-      pool,
-      forceProvider,
-      allowFailover,
-    });
+    return attachEconomics(
+      await handleSpeechAsk({
+        deps,
+        actor,
+        caller,
+        body,
+        requestId,
+        accessToken,
+        correlationId,
+        capability,
+        privacyClass,
+        operation: operation ?? (capability === "TEXT_TO_SPEECH" ? "speak" : capability === "VOICE" ? "converse" : "transcribe"),
+        sources,
+        provenance,
+        userParts,
+        sourceUnavailable,
+        startedAt,
+        drive,
+        tenantId,
+        pool,
+        forceProvider,
+        allowFailover,
+        economy,
+      }),
+      economy.snapshot(),
+    );
   }
 
   const resolvedImages = images.length
@@ -342,6 +368,14 @@ export async function handleAsk(input: {
   if (resolvedImages.length) {
     userParts.push(wrapCanonicalData("image-metadata", imageDataBlock(resolvedImages)));
   }
+
+  await economy.reserve({
+    capability,
+    message,
+    constraints: body.constraints,
+    imageCount: imageConstraints?.count,
+    imageSizeClass: imageConstraints?.sizeClass,
+  });
 
   const executed = await executeWithFailover({
     config: deps.config,
@@ -372,6 +406,7 @@ export async function handleAsk(input: {
   clearResolvedImages(resolvedImages);
 
   if (!executed.decision.ok) {
+    await economy.release("route_failed");
     const error = executed.decision.error === "unsupported_capability" ? "unsupported_capability" : "provider_unavailable";
     const receiptId = newId("rcpt");
     const recorded = await persistAsk({
@@ -398,7 +433,7 @@ export async function handleAsk(input: {
       resultStatus: sourceUnavailable ? "source_unavailable" : error,
       idempotencyKey: body.idempotencyKey,
     });
-    return {
+    return attachEconomics({
       ok: false,
       service: "digi-ai",
       error,
@@ -415,7 +450,7 @@ export async function handleAsk(input: {
         finishState: sourceUnavailable ? "source_unavailable" : error,
       },
       receiptId,
-    };
+    }, economy.snapshot());
   }
 
   let media: GeneratedMediaResult[] | undefined;
@@ -513,9 +548,22 @@ export async function handleAsk(input: {
   });
   const receiptId = last.receiptId;
 
+  const settlementUsage = providerResult?.ok
+    ? nativeUsageFromTokens(providerResult.usage)
+    : executed.attempts.map((row) => (row.result.ok ? row.result.usage : undefined)).find((row) => row);
+  await economy.settle({
+    nativeUsage: settlementUsage,
+    usageReceiptId: last.receiptId,
+    outcome: providerResult?.ok
+      ? "completed"
+      : providerResult && !providerResult.ok && providerResult.error === "safety_refused"
+        ? "refused"
+        : "failed",
+  });
+
   if (!providerResult || !providerResult.ok) {
     const status = !providerResult || providerResult.error === "unavailable" ? "provider_unavailable" : "failed";
-    return {
+    return attachEconomics({
       ok: false,
       service: "digi-ai",
       error: status,
@@ -533,7 +581,7 @@ export async function handleAsk(input: {
         finishState: sourceUnavailable ? "source_unavailable" : status,
       },
       receiptId,
-    };
+    }, economy.snapshot());
   }
 
   provenance.unshift({
@@ -547,7 +595,7 @@ export async function handleAsk(input: {
 
   const objectiveCandidate = proposeObjective(message, body.draft?.actionType);
 
-  return {
+  return attachEconomics({
     ok: true,
     service: "digi-ai",
     answer: providerResult.text,
@@ -566,7 +614,7 @@ export async function handleAsk(input: {
     receiptId,
     media,
     objectiveCandidate,
-  };
+  }, economy.snapshot());
 }
 
 function appendDigiPedia(page: DigiPediaPage, provenance: ProvenanceItem[], userParts: string[]) {
@@ -652,6 +700,7 @@ async function handleSpeechAsk(input: {
   pool: ProviderPool;
   forceProvider?: string;
   allowFailover: boolean;
+  economy: EconomySession;
 }): Promise<DigiAiAskResponse> {
   const ctx = {
     config: input.deps.config,
@@ -721,6 +770,12 @@ async function handleSpeechAsk(input: {
 
   if (input.capability === "SPEECH_TO_TEXT") {
     const resolved = await resolveSpeechAudio(ctx, true);
+    await input.economy.reserve({
+      capability: "SPEECH_TO_TEXT",
+      message: input.body.message,
+      constraints: input.body.constraints,
+      audioSeconds: resolved[0]?.durationSeconds,
+    });
     const stt = await runSpeechToText(ctx, resolved);
     clearSpeechAudio(resolved);
     const recorded = await persistStage("SPEECH_TO_TEXT", 1, stt.plan, {
@@ -732,8 +787,18 @@ async function handleSpeechAsk(input: {
       idempotency: true,
     });
     if (!stt.plan.final?.ok) {
+      await input.economy.settle({
+        nativeUsage: speechUsage(stt.plan.final),
+        usageReceiptId: recorded.receiptId,
+        outcome: stt.plan.final?.error === "safety_refused" ? "refused" : "failed",
+      });
       return failSpeech(input, recorded, stt.plan.final?.error === "unavailable" ? "provider_unavailable" : "failed", stt.plan.final?.detail || "Transcription failed.", voiceResult({ stageFailed: "STT" }));
     }
+    await input.economy.settle({
+      nativeUsage: speechUsage(stt.plan.final),
+      usageReceiptId: recorded.receiptId,
+      outcome: "completed",
+    });
     input.provenance.unshift({
       kind: "generated",
       system: "digi-ai",
@@ -765,6 +830,11 @@ async function handleSpeechAsk(input: {
   }
 
   if (input.capability === "TEXT_TO_SPEECH") {
+    await input.economy.reserve({
+      capability: "TEXT_TO_SPEECH",
+      message: input.body.message,
+      constraints: input.body.constraints,
+    });
     const tts = await runTextToSpeech(ctx, input.body.message.trim(), []);
     const recorded = await persistStage("TEXT_TO_SPEECH", 1, tts.plan, {
       media: tts.media,
@@ -776,8 +846,18 @@ async function handleSpeechAsk(input: {
       idempotency: true,
     });
     if (!tts.plan.final?.ok) {
+      await input.economy.settle({
+        nativeUsage: speechUsage(tts.plan.final),
+        usageReceiptId: recorded.receiptId,
+        outcome: tts.plan.final?.error === "safety_refused" ? "refused" : "failed",
+      });
       return failSpeech(input, recorded, tts.plan.final?.error === "unavailable" ? "provider_unavailable" : "failed", tts.plan.final?.detail || "Speech generation failed.", voiceResult({ stageFailed: "TTS" }));
     }
+    await input.economy.settle({
+      nativeUsage: speechUsage(tts.plan.final),
+      usageReceiptId: recorded.receiptId,
+      outcome: "completed",
+    });
     input.provenance.unshift({
       kind: "generated",
       system: "digi-ai",
@@ -811,12 +891,23 @@ async function handleSpeechAsk(input: {
   }
 
   const resolved = await resolveSpeechAudio(ctx, true);
+  await input.economy.reserve({
+    capability: "VOICE",
+    message: input.body.message,
+    constraints: input.body.constraints,
+    audioSeconds: resolved[0]?.durationSeconds,
+  });
   const stt = await runSpeechToText(ctx, resolved);
   if (!stt.plan.final?.ok) {
     clearSpeechAudio(resolved);
     const recorded = await persistStage("SPEECH_TO_TEXT", 1, stt.plan, {
       speech: voiceResult({ stageFailed: "STT" }),
       idempotency: true,
+    });
+    await input.economy.settle({
+      nativeUsage: speechUsage(stt.plan.final),
+      usageReceiptId: recorded.receiptId,
+      outcome: "failed",
     });
     return failSpeech(input, recorded, "failed", stt.plan.final?.detail || "Transcription failed.", voiceResult({ stageFailed: "STT" }));
   }
@@ -844,6 +935,11 @@ async function handleSpeechAsk(input: {
       speech: voiceResult({ transcript, language: stt.plan.final.language, stageFailed: "THINK" }),
       idempotency: true,
     });
+    await input.economy.settle({
+      nativeUsage: speechUsage(stt.plan.final),
+      usageReceiptId: recorded.receiptId,
+      outcome: "failed",
+    });
     return failSpeech(input, recorded, "failed", think.final?.detail || "Voice reasoning failed.", voiceResult({ transcript, stageFailed: "THINK" }));
   }
   await persistStage("THINK", 2, think);
@@ -861,6 +957,15 @@ async function handleSpeechAsk(input: {
     speech,
     idempotency: true,
     logicalCompleted: true,
+  });
+  await input.economy.settle({
+    nativeUsage: {
+      ...speechUsage(stt.plan.final),
+      ...nativeUsageFromTokens(think.final.usage),
+      ...speechUsage(tts.plan.final),
+    },
+    usageReceiptId: recorded.receiptId,
+    outcome: tts.plan.final?.ok ? "completed" : "failed",
   });
   input.provenance.unshift({
     kind: "generated",
@@ -909,6 +1014,7 @@ async function handleMusicAsk(input: {
   tenantId?: string;
   pool: ProviderPool;
   forceProvider?: string;
+  economy: EconomySession;
 }): Promise<DigiAiAskResponse> {
   const music = parseMusicRequest({
     message: input.body.message,
@@ -922,6 +1028,11 @@ async function handleMusicAsk(input: {
   };
   const count = music.count ?? 1;
   const brief = buildMusicBrief(music);
+  await input.economy.reserve({
+    capability: "MUSIC",
+    message: input.body.message,
+    constraints: input.body.constraints,
+  });
   const media: GeneratedMediaResult[] = [];
   let lastPlan: Awaited<ReturnType<typeof executeWithFailover>> | undefined;
   let lastRecorded: Awaited<ReturnType<typeof persistAsk>> | undefined;
@@ -1020,6 +1131,11 @@ async function handleMusicAsk(input: {
       },
     });
     if (!plan.final?.ok && !media.length) {
+      await input.economy.settle({
+        nativeUsage: native,
+        usageReceiptId: lastRecorded.receiptId,
+        outcome: plan.final?.error === "safety_refused" ? "refused" : "failed",
+      });
       return {
         ok: false,
         service: "digi-ai",
@@ -1042,6 +1158,11 @@ async function handleMusicAsk(input: {
     }
   }
 
+  await input.economy.settle({
+    nativeUsage: lastRecorded?.usage.nativeUsage,
+    usageReceiptId: lastRecorded?.receiptId,
+    outcome: "completed",
+  });
   input.provenance.unshift({
     kind: "generated",
     system: "digi-ai",
@@ -1089,6 +1210,7 @@ async function handleVideoAsk(input: {
   tenantId?: string;
   pool: ProviderPool;
   forceProvider?: string;
+  economy: EconomySession;
 }): Promise<DigiAiAskResponse> {
   const images = input.body.images ?? [];
   if (images.length > 1) {
@@ -1119,6 +1241,11 @@ async function handleVideoAsk(input: {
   };
   const count = video.count;
   const brief = buildVideoBrief(video);
+  await input.economy.reserve({
+    capability: "VIDEO",
+    message: input.body.message,
+    constraints: input.body.constraints,
+  });
   const pixels = videoPixelSize(video.aspectRatio, video.resolution);
   const media: GeneratedMediaResult[] = [];
   let lastPlan: Awaited<ReturnType<typeof executeWithFailover>> | undefined;
@@ -1175,6 +1302,11 @@ async function handleVideoAsk(input: {
       });
     }
     if (plan.final?.ok && plan.final.jobStatus === "processing") {
+      if (plan.final.providerRequestId) await input.economy.markProcessing(plan.final.providerRequestId);
+      await input.economy.settle({
+        outcome: "processing",
+        usageReceiptId: plan.final.providerRequestId,
+      });
       lastRecorded = await persistAsk({
         deps: input.deps,
         actor: input.actor,
@@ -1301,6 +1433,11 @@ async function handleVideoAsk(input: {
       },
     });
     if (!plan.final?.ok && !media.length) {
+      await input.economy.settle({
+        nativeUsage: native,
+        usageReceiptId: lastRecorded.receiptId,
+        outcome: plan.final?.error === "safety_refused" ? "refused" : "failed",
+      });
       clearResolvedImages(resolvedImages);
       return {
         ok: false,
@@ -1324,6 +1461,11 @@ async function handleVideoAsk(input: {
     }
   }
 
+  await input.economy.settle({
+    nativeUsage: lastRecorded?.usage.nativeUsage,
+    usageReceiptId: lastRecorded?.receiptId,
+    outcome: "completed",
+  });
   clearResolvedImages(resolvedImages);
   input.provenance.unshift({
     kind: "generated",

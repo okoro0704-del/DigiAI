@@ -2,6 +2,8 @@
  * Digi AI configuration.
  * Railway / Netlify hosts are never the public Digi AI product identity.
  */
+import { parseEconomicsMode } from "./credits/mode.js";
+
 export function env(name: string, fallback = ""): string {
   const value = process.env[name];
   return value && value.trim() ? value.trim() : fallback;
@@ -121,6 +123,7 @@ export function loadConfig() {
     sovereignDriveAcceptanceTenant: env("SOVEREIGN_DRIVE_ACCEPTANCE_TENANT", "digi-ai-acceptance"),
     sovereignDriveTimeoutMs: Number(env("SOVEREIGN_DRIVE_TIMEOUT_MS", "45000")),
     newsLimit: Number(env("DIGINEWS_LIMIT", "8")),
+    economicsMode: parseEconomicsMode(env("DIGI_AI_ECONOMICS_MODE", "observe")),
   };
 }
 

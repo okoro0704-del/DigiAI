@@ -1,10 +1,32 @@
-import { Pool, type PoolConfig, type QueryResultRow } from "pg";
+import { Pool, type PoolClient, type PoolConfig, type QueryResultRow } from "pg";
+import type {
+  CreditAccount,
+  CreditEntryKind,
+  CreditLedgerEntry,
+  CreditLedgerPage,
+  CreditLedgerQuery,
+  CreditOwnerType,
+  CreditReservation,
+  ReservationStatus,
+} from "../contracts/credits.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
+import { creditCursor, deriveCreditBalance, parseCreditCursor } from "../credits/balance.js";
+import { addUnits, assertNonNegativeUnits, assertPositiveUnits, assertUnits, clampNonNegative, minUnits, subUnits } from "../credits/units.js";
+import { newId, nowIso } from "../lib/crypto.js";
+import { DigiAiError } from "../lib/http.js";
 import { logEvent } from "../lib/log.js";
 import { aggregateEntries } from "../usage/aggregate.js";
 import { usageFromLedger } from "../usage/ledger.js";
-import type { DigiAiStore } from "./types.js";
+import type {
+  AdjustCreditsInput,
+  DigiAiStore,
+  EnsureCreditAccountInput,
+  GrantCreditsInput,
+  ReleaseReservationInput,
+  ReserveCreditsInput,
+  SettleReservationInput,
+} from "./types.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS usage_ledger (
@@ -46,6 +68,64 @@ CREATE TABLE IF NOT EXISTS request_receipts (
   payload JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS credit_accounts (
+  account_id TEXT PRIMARY KEY,
+  owner_type TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  tenant_id TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (owner_type, owner_id)
+);
+CREATE TABLE IF NOT EXISTS credit_ledger (
+  entry_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  units BIGINT NOT NULL,
+  reservation_id TEXT,
+  logical_request_id TEXT,
+  usage_receipt_id TEXT,
+  metering_policy_version TEXT,
+  idempotency_key TEXT,
+  application_id TEXT,
+  actor_id TEXT,
+  tenant_id TEXT,
+  authorized_by TEXT,
+  reason_code TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS credit_ledger_idempotency
+  ON credit_ledger (account_id, kind, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS credit_ledger_consume_request
+  ON credit_ledger (account_id, logical_request_id)
+  WHERE kind = 'CONSUME' AND logical_request_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS credit_reservations (
+  reservation_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  logical_request_id TEXT NOT NULL,
+  estimated_units BIGINT NOT NULL,
+  reserved_units BIGINT NOT NULL,
+  consumed_units BIGINT NOT NULL DEFAULT 0,
+  released_units BIGINT NOT NULL DEFAULT 0,
+  shortfall_units BIGINT NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  metering_policy_version TEXT NOT NULL,
+  capability TEXT,
+  provider_operation_id TEXT,
+  idempotency_key TEXT,
+  application_id TEXT,
+  actor_id TEXT,
+  tenant_id TEXT,
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS credit_reservations_request
+  ON credit_reservations (account_id, logical_request_id);
+CREATE UNIQUE INDEX IF NOT EXISTS credit_reservations_idempotency
+  ON credit_reservations (account_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
 `;
 
 function poolConfig(url: string): PoolConfig {
@@ -242,4 +322,565 @@ export class PostgresStore implements DigiAiStore {
   ledgerStatus(): LedgerStatus {
     return { durable: true, writable: this.writable, backend: "postgres" };
   }
+
+  creditStatus(): LedgerStatus {
+    return this.ledgerStatus();
+  }
+
+  private async withCreditTx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    await this.ready();
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await fn(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        /* ignore */
+      }
+      const code = err && typeof err === "object" && "code" in err ? String((err as { code?: string }).code) : "";
+      if (code === "23505") throw err;
+      this.writable = false;
+      logEvent("credit_ledger_write_failed", { message: err instanceof Error ? err.message : "write_failed" });
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async loadBalance(client: PoolClient, accountId: string) {
+    const entries = await client.query(`SELECT * FROM credit_ledger WHERE account_id = $1`, [accountId]);
+    const reservations = await client.query(`SELECT * FROM credit_reservations WHERE account_id = $1`, [accountId]);
+    return deriveCreditBalance({
+      accountId,
+      entries: entries.rows.map(toCreditEntry),
+      reservations: reservations.rows.map(toReservation),
+    });
+  }
+
+  private async lockAccount(client: PoolClient, accountId: string) {
+    await client.query(`SELECT account_id FROM credit_accounts WHERE account_id = $1 FOR UPDATE`, [accountId]);
+  }
+
+  private async insertAccount(client: PoolClient, input: EnsureCreditAccountInput): Promise<CreditAccount> {
+    const existing = await client.query(
+      `SELECT * FROM credit_accounts WHERE owner_type = $1 AND owner_id = $2`,
+      [input.ownerType, input.ownerId],
+    );
+    if (existing.rows[0]) return toAccount(existing.rows[0]);
+    const account: CreditAccount = {
+      accountId: newId("acct"),
+      ownerType: input.ownerType,
+      ownerId: input.ownerId,
+      tenantId: input.tenantId,
+      status: "active",
+      createdAt: nowIso(),
+    };
+    await client.query(
+      `INSERT INTO credit_accounts (account_id, owner_type, owner_id, tenant_id, status, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (owner_type, owner_id) DO NOTHING`,
+      [account.accountId, account.ownerType, account.ownerId, account.tenantId ?? null, account.status, account.createdAt],
+    );
+    const row = await client.query(`SELECT * FROM credit_accounts WHERE owner_type = $1 AND owner_id = $2`, [input.ownerType, input.ownerId]);
+    return toAccount(row.rows[0]);
+  }
+
+  async ensureCreditAccount(input: EnsureCreditAccountInput) {
+    return this.withCreditTx(async (client) => this.insertAccount(client, input));
+  }
+
+  async getCreditAccount(accountId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT * FROM credit_accounts WHERE account_id = $1`, [accountId]);
+    return result.rows[0] ? toAccount(result.rows[0]) : null;
+  }
+
+  async getCreditAccountByOwner(ownerType: CreditOwnerType, ownerId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT * FROM credit_accounts WHERE owner_type = $1 AND owner_id = $2`, [ownerType, ownerId]);
+    return result.rows[0] ? toAccount(result.rows[0]) : null;
+  }
+
+  async computeCreditBalance(accountId: string) {
+    await this.ready();
+    const client = await this.pool.connect();
+    try {
+      return await this.loadBalance(client, accountId);
+    } finally {
+      client.release();
+    }
+  }
+
+  async grantCredits(input: GrantCreditsInput) {
+    const units = assertPositiveUnits(input.units, "grant");
+    return this.withCreditTx(async (client) => {
+      const account = await this.insertAccount(client, input);
+      await this.lockAccount(client, account.accountId);
+      const existing = await client.query(
+        `SELECT * FROM credit_ledger WHERE account_id = $1 AND kind = 'GRANT' AND idempotency_key = $2`,
+        [account.accountId, input.idempotencyKey],
+      );
+      if (existing.rows[0]) {
+        return { inserted: false, account, entry: toCreditEntry(existing.rows[0]), balance: await this.loadBalance(client, account.accountId) };
+      }
+      const entry = creditEntryRow({
+        accountId: account.accountId,
+        kind: "GRANT",
+        units,
+        idempotencyKey: input.idempotencyKey,
+        applicationId: input.applicationId,
+        actorId: input.actorId,
+        tenantId: input.tenantId ?? account.tenantId,
+        authorizedBy: input.authorizedBy,
+        reasonCode: input.reasonCode,
+      });
+      await insertCreditEntry(client, entry);
+      return { inserted: true, account, entry, balance: await this.loadBalance(client, account.accountId) };
+    });
+  }
+
+  async adjustCredits(input: AdjustCreditsInput) {
+    const units = assertUnits(input.units, "adjustment");
+    if (units === 0) throw new DigiAiError(400, "invalid_units", "Adjustment cannot be zero.");
+    return this.withCreditTx(async (client) => {
+      let account: CreditAccount | null = null;
+      if (input.accountId) {
+        const found = await client.query(`SELECT * FROM credit_accounts WHERE account_id = $1`, [input.accountId]);
+        account = found.rows[0] ? toAccount(found.rows[0]) : null;
+      } else {
+        account = await this.insertAccount(client, { ownerType: input.ownerType!, ownerId: input.ownerId!, tenantId: input.tenantId });
+      }
+      if (!account) throw new DigiAiError(404, "account_not_found", "Credit account was not found.");
+      await this.lockAccount(client, account.accountId);
+      const existing = await client.query(
+        `SELECT * FROM credit_ledger WHERE account_id = $1 AND kind = 'ADJUSTMENT' AND idempotency_key = $2`,
+        [account.accountId, input.idempotencyKey],
+      );
+      if (existing.rows[0]) {
+        return { inserted: false, account, entry: toCreditEntry(existing.rows[0]), balance: await this.loadBalance(client, account.accountId) };
+      }
+      const entry = creditEntryRow({
+        accountId: account.accountId,
+        kind: "ADJUSTMENT",
+        units,
+        idempotencyKey: input.idempotencyKey,
+        applicationId: input.applicationId,
+        actorId: input.actorId,
+        tenantId: input.tenantId ?? account.tenantId,
+        authorizedBy: input.authorizedBy,
+        reasonCode: input.reasonCode,
+      });
+      await insertCreditEntry(client, entry);
+      return { inserted: true, account, entry, balance: await this.loadBalance(client, account.accountId) };
+    });
+  }
+
+  async reserveCredits(input: ReserveCreditsInput) {
+    const reservedUnits = assertNonNegativeUnits(input.reservedUnits, "reserve");
+    const estimatedUnits = assertNonNegativeUnits(input.estimatedUnits, "estimate");
+    return this.withCreditTx(async (client) => {
+      await this.lockAccount(client, input.accountId);
+      const existing = input.idempotencyKey
+        ? await client.query(
+            `SELECT * FROM credit_reservations WHERE account_id = $1 AND (idempotency_key = $2 OR logical_request_id = $3) LIMIT 1`,
+            [input.accountId, input.idempotencyKey, input.logicalRequestId],
+          )
+        : await client.query(
+            `SELECT * FROM credit_reservations WHERE account_id = $1 AND logical_request_id = $2`,
+            [input.accountId, input.logicalRequestId],
+          );
+      if (existing.rows[0]) {
+        return {
+          inserted: false,
+          reservation: toReservation(existing.rows[0]),
+          balance: await this.loadBalance(client, input.accountId),
+          insufficient: false,
+        };
+      }
+      const balance = await this.loadBalance(client, input.accountId);
+      if (!input.observeOnly && reservedUnits > balance.availableUnits) {
+        return {
+          inserted: false,
+          reservation: {
+            reservationId: "",
+            accountId: input.accountId,
+            logicalRequestId: input.logicalRequestId,
+            estimatedUnits,
+            reservedUnits,
+            consumedUnits: 0,
+            releasedUnits: 0,
+            shortfallUnits: 0,
+            status: "held" as const,
+            meteringPolicyVersion: input.meteringPolicyVersion,
+            capability: input.capability,
+            idempotencyKey: input.idempotencyKey,
+            applicationId: input.applicationId,
+            actorId: input.actorId,
+            tenantId: input.tenantId,
+            expiresAt: input.expiresAt,
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+          },
+          balance,
+          insufficient: true,
+        };
+      }
+      const now = nowIso();
+      const reservation: CreditReservation = {
+        reservationId: newId("rsv"),
+        accountId: input.accountId,
+        logicalRequestId: input.logicalRequestId,
+        estimatedUnits,
+        reservedUnits,
+        consumedUnits: 0,
+        releasedUnits: 0,
+        shortfallUnits: 0,
+        status: input.observeOnly ? "observe" : "held",
+        meteringPolicyVersion: input.meteringPolicyVersion,
+        capability: input.capability,
+        idempotencyKey: input.idempotencyKey,
+        applicationId: input.applicationId,
+        actorId: input.actorId,
+        tenantId: input.tenantId,
+        expiresAt: input.expiresAt,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await client.query(
+        `INSERT INTO credit_reservations (
+          reservation_id, account_id, logical_request_id, estimated_units, reserved_units, consumed_units,
+          released_units, shortfall_units, status, metering_policy_version, capability, provider_operation_id,
+          idempotency_key, application_id, actor_id, tenant_id, expires_at, created_at, updated_at
+        ) VALUES ($1,$2,$3,$4,$5,0,0,0,$6,$7,$8,NULL,$9,$10,$11,$12,$13,$14,$15)`,
+        [
+          reservation.reservationId,
+          reservation.accountId,
+          reservation.logicalRequestId,
+          reservation.estimatedUnits,
+          reservation.reservedUnits,
+          reservation.status,
+          reservation.meteringPolicyVersion,
+          reservation.capability ?? null,
+          reservation.idempotencyKey ?? null,
+          reservation.applicationId ?? null,
+          reservation.actorId ?? null,
+          reservation.tenantId ?? null,
+          reservation.expiresAt ?? null,
+          reservation.createdAt,
+          reservation.updatedAt,
+        ],
+      );
+      const entry = creditEntryRow({
+        accountId: input.accountId,
+        kind: "RESERVE",
+        units: reservedUnits,
+        reservationId: reservation.reservationId,
+        logicalRequestId: input.logicalRequestId,
+        meteringPolicyVersion: input.meteringPolicyVersion,
+        idempotencyKey: input.idempotencyKey,
+        applicationId: input.applicationId,
+        actorId: input.actorId,
+        tenantId: input.tenantId,
+        reasonCode: input.observeOnly ? "observe" : "reserve",
+      });
+      await insertCreditEntry(client, entry);
+      return {
+        inserted: true,
+        reservation,
+        entry,
+        balance: await this.loadBalance(client, input.accountId),
+        insufficient: false,
+      };
+    });
+  }
+
+  async settleReservation(input: SettleReservationInput) {
+    const actual = assertNonNegativeUnits(input.actualUnits, "actual");
+    return this.withCreditTx(async (client) => {
+      const found = await client.query(`SELECT * FROM credit_reservations WHERE reservation_id = $1`, [input.reservationId]);
+      if (!found.rows[0]) throw new DigiAiError(404, "reservation_not_found", "Reservation was not found.");
+      const reservation = toReservation(found.rows[0]);
+      await this.lockAccount(client, reservation.accountId);
+      const locked = toReservation((await client.query(`SELECT * FROM credit_reservations WHERE reservation_id = $1 FOR UPDATE`, [input.reservationId])).rows[0]);
+      if (locked.status === "settled" || locked.status === "released") {
+        return { inserted: false, reservation: locked, balance: await this.loadBalance(client, locked.accountId) };
+      }
+      const consumeExisting = await client.query(
+        `SELECT * FROM credit_ledger WHERE account_id = $1 AND kind = 'CONSUME' AND logical_request_id = $2`,
+        [locked.accountId, locked.logicalRequestId],
+      );
+      if (consumeExisting.rows[0]) {
+        return { inserted: false, reservation: locked, consume: toCreditEntry(consumeExisting.rows[0]), balance: await this.loadBalance(client, locked.accountId) };
+      }
+      const availableExtra = assertNonNegativeUnits(input.additionalAvailable ?? 0, "additional");
+      const consumeUnits = minUnits(actual, addUnits(locked.reservedUnits, availableExtra));
+      const releaseUnits = clampNonNegative(subUnits(locked.reservedUnits, consumeUnits));
+      const shortfall = clampNonNegative(subUnits(actual, consumeUnits));
+      let consume: CreditLedgerEntry | undefined;
+      let release: CreditLedgerEntry | undefined;
+      if (consumeUnits > 0) {
+        consume = creditEntryRow({
+          accountId: locked.accountId,
+          kind: "CONSUME",
+          units: consumeUnits,
+          reservationId: locked.reservationId,
+          logicalRequestId: locked.logicalRequestId,
+          usageReceiptId: input.usageReceiptId,
+          meteringPolicyVersion: locked.meteringPolicyVersion,
+          idempotencyKey: locked.idempotencyKey ? `${locked.idempotencyKey}:consume` : undefined,
+          applicationId: locked.applicationId,
+          actorId: locked.actorId,
+          tenantId: locked.tenantId,
+          reasonCode: "settle",
+        });
+        await insertCreditEntry(client, consume);
+      }
+      if (releaseUnits > 0) {
+        release = creditEntryRow({
+          accountId: locked.accountId,
+          kind: "RELEASE",
+          units: releaseUnits,
+          reservationId: locked.reservationId,
+          logicalRequestId: locked.logicalRequestId,
+          usageReceiptId: input.usageReceiptId,
+          meteringPolicyVersion: locked.meteringPolicyVersion,
+          idempotencyKey: locked.idempotencyKey ? `${locked.idempotencyKey}:release` : undefined,
+          applicationId: locked.applicationId,
+          actorId: locked.actorId,
+          tenantId: locked.tenantId,
+          reasonCode: "unused_reservation",
+        });
+        await insertCreditEntry(client, release);
+      }
+      const next: CreditReservation = {
+        ...locked,
+        consumedUnits: consumeUnits,
+        releasedUnits: releaseUnits,
+        shortfallUnits: shortfall,
+        status: shortfall > 0 ? "shortfall" : "settled",
+        updatedAt: nowIso(),
+      };
+      await client.query(
+        `UPDATE credit_reservations SET consumed_units=$2, released_units=$3, shortfall_units=$4, status=$5, updated_at=$6 WHERE reservation_id=$1`,
+        [next.reservationId, next.consumedUnits, next.releasedUnits, next.shortfallUnits, next.status, next.updatedAt],
+      );
+      return { inserted: true, reservation: next, consume, release, balance: await this.loadBalance(client, next.accountId) };
+    });
+  }
+
+  async releaseReservation(input: ReleaseReservationInput) {
+    return this.withCreditTx(async (client) => {
+      const found = await client.query(`SELECT * FROM credit_reservations WHERE reservation_id = $1`, [input.reservationId]);
+      if (!found.rows[0]) throw new DigiAiError(404, "reservation_not_found", "Reservation was not found.");
+      const reservation = toReservation(found.rows[0]);
+      await this.lockAccount(client, reservation.accountId);
+      const locked = toReservation((await client.query(`SELECT * FROM credit_reservations WHERE reservation_id = $1 FOR UPDATE`, [input.reservationId])).rows[0]);
+      if (locked.status === "released" || locked.status === "settled") {
+        return { inserted: false, reservation: locked, balance: await this.loadBalance(client, locked.accountId) };
+      }
+      const remaining = clampNonNegative(subUnits(locked.reservedUnits, addUnits(locked.consumedUnits, locked.releasedUnits)));
+      let entry: CreditLedgerEntry | undefined;
+      if (remaining > 0) {
+        entry = creditEntryRow({
+          accountId: locked.accountId,
+          kind: "RELEASE",
+          units: remaining,
+          reservationId: locked.reservationId,
+          logicalRequestId: locked.logicalRequestId,
+          meteringPolicyVersion: locked.meteringPolicyVersion,
+          idempotencyKey: locked.idempotencyKey ? `${locked.idempotencyKey}:abort` : undefined,
+          applicationId: locked.applicationId,
+          actorId: locked.actorId,
+          tenantId: locked.tenantId,
+          reasonCode: input.reasonCode ?? "release",
+        });
+        await insertCreditEntry(client, entry);
+      }
+      const next: CreditReservation = {
+        ...locked,
+        releasedUnits: addUnits(locked.releasedUnits, remaining),
+        status: "released",
+        updatedAt: nowIso(),
+      };
+      await client.query(
+        `UPDATE credit_reservations SET released_units=$2, status=$3, updated_at=$4 WHERE reservation_id=$1`,
+        [next.reservationId, next.releasedUnits, next.status, next.updatedAt],
+      );
+      return { inserted: true, reservation: next, entry, balance: await this.loadBalance(client, next.accountId) };
+    });
+  }
+
+  async getReservation(reservationId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT * FROM credit_reservations WHERE reservation_id = $1`, [reservationId]);
+    return result.rows[0] ? toReservation(result.rows[0]) : null;
+  }
+
+  async getReservationByIdempotency(accountId: string, idempotencyKey: string) {
+    await this.ready();
+    const result = await this.pool.query(
+      `SELECT * FROM credit_reservations WHERE account_id = $1 AND idempotency_key = $2`,
+      [accountId, idempotencyKey],
+    );
+    return result.rows[0] ? toReservation(result.rows[0]) : null;
+  }
+
+  async getReservationByRequest(accountId: string, logicalRequestId: string) {
+    await this.ready();
+    const result = await this.pool.query(
+      `SELECT * FROM credit_reservations WHERE account_id = $1 AND logical_request_id = $2`,
+      [accountId, logicalRequestId],
+    );
+    return result.rows[0] ? toReservation(result.rows[0]) : null;
+  }
+
+  async updateReservationHold(reservationId: string, patch: { providerOperationId?: string; expiresAt?: string; status?: ReservationStatus }) {
+    await this.ready();
+    const current = await this.getReservation(reservationId);
+    if (!current) return null;
+    const next = {
+      ...current,
+      providerOperationId: patch.providerOperationId ?? current.providerOperationId,
+      expiresAt: patch.expiresAt ?? current.expiresAt,
+      status: patch.status ?? current.status,
+      updatedAt: nowIso(),
+    };
+    await this.pool.query(
+      `UPDATE credit_reservations SET provider_operation_id=$2, expires_at=$3, status=$4, updated_at=$5 WHERE reservation_id=$1`,
+      [reservationId, next.providerOperationId ?? null, next.expiresAt ?? null, next.status, next.updatedAt],
+    );
+    return next;
+  }
+
+  async listCreditEntries(query: CreditLedgerQuery): Promise<CreditLedgerPage> {
+    await this.ready();
+    const limit = Math.min(Math.max(query.limit ?? 20, 1), 50);
+    const cursor = parseCreditCursor(query.after);
+    const values: unknown[] = [query.accountId];
+    let where = "account_id = $1";
+    if (cursor) {
+      values.push(cursor.createdAt, cursor.entryId);
+      where += ` AND (created_at > $2 OR (created_at = $2 AND entry_id > $3))`;
+    }
+    values.push(limit + 1);
+    const result = await this.pool.query(
+      `SELECT * FROM credit_ledger WHERE ${where} ORDER BY created_at ASC, entry_id ASC LIMIT $${values.length}`,
+      values,
+    );
+    const rows = result.rows.map(toCreditEntry);
+    const entries = rows.slice(0, limit);
+    return { entries, nextCursor: rows.length > limit ? creditCursor(entries[entries.length - 1]!) : undefined };
+  }
+
+  async listCreditReservations(accountId?: string) {
+    await this.ready();
+    const result = accountId
+      ? await this.pool.query(`SELECT * FROM credit_reservations WHERE account_id = $1`, [accountId])
+      : await this.pool.query(`SELECT * FROM credit_reservations`);
+    return result.rows.map(toReservation);
+  }
+
+  async listCreditAccounts() {
+    await this.ready();
+    const result = await this.pool.query(`SELECT * FROM credit_accounts ORDER BY created_at ASC`);
+    return result.rows.map(toAccount);
+  }
+
+  async findCreditEntry(accountId: string, kind: CreditEntryKind, idempotencyKey: string) {
+    await this.ready();
+    const result = await this.pool.query(
+      `SELECT * FROM credit_ledger WHERE account_id = $1 AND kind = $2 AND idempotency_key = $3`,
+      [accountId, kind, idempotencyKey],
+    );
+    return result.rows[0] ? toCreditEntry(result.rows[0]) : null;
+  }
+}
+
+function toAccount(row: QueryResultRow): CreditAccount {
+  return {
+    accountId: String(row.account_id),
+    ownerType: row.owner_type === "tenant" ? "tenant" : "actor",
+    ownerId: String(row.owner_id),
+    tenantId: row.tenant_id ? String(row.tenant_id) : undefined,
+    status: row.status === "suspended" ? "suspended" : "active",
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
+function toCreditEntry(row: QueryResultRow): CreditLedgerEntry {
+  return {
+    entryId: String(row.entry_id),
+    accountId: String(row.account_id),
+    kind: String(row.kind) as CreditLedgerEntry["kind"],
+    units: Number(row.units),
+    reservationId: row.reservation_id ? String(row.reservation_id) : undefined,
+    logicalRequestId: row.logical_request_id ? String(row.logical_request_id) : undefined,
+    usageReceiptId: row.usage_receipt_id ? String(row.usage_receipt_id) : undefined,
+    meteringPolicyVersion: row.metering_policy_version ? String(row.metering_policy_version) : undefined,
+    idempotencyKey: row.idempotency_key ? String(row.idempotency_key) : undefined,
+    applicationId: row.application_id ? String(row.application_id) : undefined,
+    actorId: row.actor_id ? String(row.actor_id) : undefined,
+    tenantId: row.tenant_id ? String(row.tenant_id) : undefined,
+    authorizedBy: row.authorized_by ? String(row.authorized_by) : undefined,
+    reasonCode: row.reason_code ? String(row.reason_code) : undefined,
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
+function toReservation(row: QueryResultRow): CreditReservation {
+  return {
+    reservationId: String(row.reservation_id),
+    accountId: String(row.account_id),
+    logicalRequestId: String(row.logical_request_id),
+    estimatedUnits: Number(row.estimated_units),
+    reservedUnits: Number(row.reserved_units),
+    consumedUnits: Number(row.consumed_units),
+    releasedUnits: Number(row.released_units),
+    shortfallUnits: Number(row.shortfall_units),
+    status: String(row.status) as ReservationStatus,
+    meteringPolicyVersion: String(row.metering_policy_version),
+    capability: row.capability ? String(row.capability) : undefined,
+    providerOperationId: row.provider_operation_id ? String(row.provider_operation_id) : undefined,
+    idempotencyKey: row.idempotency_key ? String(row.idempotency_key) : undefined,
+    applicationId: row.application_id ? String(row.application_id) : undefined,
+    actorId: row.actor_id ? String(row.actor_id) : undefined,
+    tenantId: row.tenant_id ? String(row.tenant_id) : undefined,
+    expiresAt: row.expires_at ? new Date(row.expires_at).toISOString() : undefined,
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+  };
+}
+
+function creditEntryRow(input: Omit<CreditLedgerEntry, "entryId" | "createdAt">): CreditLedgerEntry {
+  return { ...input, entryId: newId("crd"), createdAt: nowIso() };
+}
+
+async function insertCreditEntry(client: PoolClient, entry: CreditLedgerEntry) {
+  await client.query(
+    `INSERT INTO credit_ledger (
+      entry_id, account_id, kind, units, reservation_id, logical_request_id, usage_receipt_id,
+      metering_policy_version, idempotency_key, application_id, actor_id, tenant_id, authorized_by, reason_code, created_at
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+    [
+      entry.entryId,
+      entry.accountId,
+      entry.kind,
+      entry.units,
+      entry.reservationId ?? null,
+      entry.logicalRequestId ?? null,
+      entry.usageReceiptId ?? null,
+      entry.meteringPolicyVersion ?? null,
+      entry.idempotencyKey ?? null,
+      entry.applicationId ?? null,
+      entry.actorId ?? null,
+      entry.tenantId ?? null,
+      entry.authorizedBy ?? null,
+      entry.reasonCode ?? null,
+      entry.createdAt,
+    ],
+  );
 }

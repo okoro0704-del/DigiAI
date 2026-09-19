@@ -1,3 +1,4 @@
+import type { CreditReceiptSnapshot, EconomicsMode } from "./credits.js";
 import type { ObjectiveCandidate } from "./objectives.js";
 import type { ProvenanceItem } from "./provenance.js";
 import type { NativeUsage } from "./usage.js";
@@ -67,6 +68,7 @@ export type DigiAiAskSuccess = {
   media?: GeneratedMediaResult[];
   speech?: VoiceInteractionResult;
   objectiveCandidate?: ObjectiveCandidate;
+  economics?: CreditReceiptSnapshot;
 };
 
 export type DigiAiAskFailure = {
@@ -80,6 +82,7 @@ export type DigiAiAskFailure = {
   receiptId?: string;
   media?: GeneratedMediaResult[];
   speech?: VoiceInteractionResult;
+  economics?: CreditReceiptSnapshot;
 };
 
 export type DigiAiAskResponse = DigiAiAskSuccess | DigiAiAskFailure;
@@ -145,6 +148,21 @@ export type HealthResponse = {
     canonicalPersistence: {
       available: boolean;
       status: "available" | "unavailable";
+    };
+  };
+  economics?: {
+    creditLedger: {
+      durable: boolean;
+      writable: boolean;
+      backend: "memory" | "postgres" | "file";
+    };
+    metering: {
+      loaded: boolean;
+      mode: EconomicsMode;
+      commercialPolicyConfigured: boolean;
+    };
+    reservations: {
+      supported: boolean;
     };
   };
 };

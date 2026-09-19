@@ -8,6 +8,7 @@ import { ProviderPool } from "../providers/pool.js";
 import { providerHealth } from "../providers/router.js";
 import type { DigiAiStore } from "../store/types.js";
 import { UnboundDrive, type DriveStatus, type SovereignDrive } from "../media/drive.js";
+import { commercialPolicyConfigured, listMeteringPolicies } from "../credits/policy.js";
 import { enabledVoiceProfileCount } from "../registry/voices.js";
 import { activePricingVersions } from "../usage/pricing-catalog.js";
 import { decideRoute } from "./policy.js";
@@ -72,6 +73,7 @@ export function buildHealthResponse(
   }
 
   const ledger = store?.ledgerStatus() ?? { durable: false, writable: false, backend: "memory" as const };
+  const credits = store?.creditStatus() ?? ledger;
   return {
     ok: true,
     service: "digi-ai",
@@ -111,6 +113,21 @@ export function buildHealthResponse(
       canonicalPersistence: {
         available: Boolean(drive.status().write),
         status: drive.status().write ? "available" : "unavailable",
+      },
+    },
+    economics: {
+      creditLedger: {
+        durable: credits.durable,
+        writable: credits.writable,
+        backend: credits.backend,
+      },
+      metering: {
+        loaded: listMeteringPolicies().length > 0,
+        mode: config.economicsMode,
+        commercialPolicyConfigured: commercialPolicyConfigured(),
+      },
+      reservations: {
+        supported: true,
       },
     },
   };

@@ -1,5 +1,83 @@
+import type {
+  CreditAccount,
+  CreditBalance,
+  CreditEntryKind,
+  CreditLedgerEntry,
+  CreditLedgerPage,
+  CreditLedgerQuery,
+  CreditOwnerType,
+  CreditReservation,
+  ReservationStatus,
+} from "../contracts/credits.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus, UsageAggregate } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
+
+export type EnsureCreditAccountInput = {
+  ownerType: CreditOwnerType;
+  ownerId: string;
+  tenantId?: string;
+};
+
+export type GrantCreditsInput = {
+  ownerType: CreditOwnerType;
+  ownerId: string;
+  tenantId?: string;
+  units: number;
+  idempotencyKey: string;
+  applicationId?: string;
+  actorId?: string;
+  authorizedBy: string;
+  reasonCode: string;
+};
+
+export type AdjustCreditsInput = {
+  accountId?: string;
+  ownerType?: CreditOwnerType;
+  ownerId?: string;
+  tenantId?: string;
+  units: number;
+  idempotencyKey: string;
+  applicationId?: string;
+  actorId?: string;
+  authorizedBy: string;
+  reasonCode: string;
+};
+
+export type ReserveCreditsInput = {
+  accountId: string;
+  logicalRequestId: string;
+  estimatedUnits: number;
+  reservedUnits: number;
+  meteringPolicyVersion: string;
+  capability?: string;
+  idempotencyKey?: string;
+  applicationId?: string;
+  actorId?: string;
+  tenantId?: string;
+  expiresAt?: string;
+  observeOnly?: boolean;
+};
+
+export type SettleReservationInput = {
+  reservationId: string;
+  actualUnits: number;
+  usageReceiptId?: string;
+  additionalAvailable?: number;
+};
+
+export type ReleaseReservationInput = {
+  reservationId: string;
+  reasonCode?: string;
+};
+
+export type CreditMutationResult<T> = {
+  inserted: boolean;
+  account?: CreditAccount;
+  entry?: CreditLedgerEntry;
+  reservation?: CreditReservation;
+  balance?: CreditBalance;
+  value: T;
+};
 
 export interface DigiAiStore {
   recordUsage(row: UsageRecord): Promise<void>;
@@ -14,4 +92,39 @@ export interface DigiAiStore {
   findReceiptByIdempotency?(callerId: string, idempotencyKey: string): Promise<RequestReceipt | null>;
   updateReceiptSnapshot?(receiptId: string, resultSnapshot: RequestReceipt["resultSnapshot"]): Promise<void>;
   ready?(): Promise<void>;
+  creditStatus(): LedgerStatus;
+  ensureCreditAccount(input: EnsureCreditAccountInput): Promise<CreditAccount>;
+  getCreditAccount(accountId: string): Promise<CreditAccount | null>;
+  getCreditAccountByOwner(ownerType: CreditOwnerType, ownerId: string): Promise<CreditAccount | null>;
+  computeCreditBalance(accountId: string): Promise<CreditBalance>;
+  grantCredits(input: GrantCreditsInput): Promise<{ inserted: boolean; account: CreditAccount; entry: CreditLedgerEntry; balance: CreditBalance }>;
+  adjustCredits(input: AdjustCreditsInput): Promise<{ inserted: boolean; account: CreditAccount; entry: CreditLedgerEntry; balance: CreditBalance }>;
+  reserveCredits(input: ReserveCreditsInput): Promise<{
+    inserted: boolean;
+    reservation: CreditReservation;
+    entry?: CreditLedgerEntry;
+    balance: CreditBalance;
+    insufficient: boolean;
+  }>;
+  settleReservation(input: SettleReservationInput): Promise<{
+    inserted: boolean;
+    reservation: CreditReservation;
+    consume?: CreditLedgerEntry;
+    release?: CreditLedgerEntry;
+    balance: CreditBalance;
+  }>;
+  releaseReservation(input: ReleaseReservationInput): Promise<{
+    inserted: boolean;
+    reservation: CreditReservation;
+    entry?: CreditLedgerEntry;
+    balance: CreditBalance;
+  }>;
+  getReservation(reservationId: string): Promise<CreditReservation | null>;
+  getReservationByIdempotency(accountId: string, idempotencyKey: string): Promise<CreditReservation | null>;
+  getReservationByRequest(accountId: string, logicalRequestId: string): Promise<CreditReservation | null>;
+  updateReservationHold(reservationId: string, patch: { providerOperationId?: string; expiresAt?: string; status?: ReservationStatus }): Promise<CreditReservation | null>;
+  listCreditEntries(query: CreditLedgerQuery): Promise<CreditLedgerPage>;
+  listCreditReservations(accountId?: string): Promise<CreditReservation[]>;
+  listCreditAccounts(): Promise<CreditAccount[]>;
+  findCreditEntry(accountId: string, kind: CreditEntryKind, idempotencyKey: string): Promise<CreditLedgerEntry | null>;
 }

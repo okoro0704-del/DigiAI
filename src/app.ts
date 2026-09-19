@@ -27,6 +27,9 @@ import type { IntelligenceProvider } from "./providers/types.js";
 import { createStore } from "./store/index.js";
 import type { DigiAiStore } from "./store/types.js";
 import type { LedgerQuery } from "./contracts/ledger.js";
+import { runEconomicAcceptance } from "./credits/acceptance.js";
+import { assertOperatorEconomics, readOwnCreditLedger, readOwnCreditSummary } from "./credits/query.js";
+import { reconcileCredits } from "./credits/reconcile.js";
 import { isOperatorCaller, readUsageReceipt, readUsageSummary, scopedLedgerQuery } from "./usage/query.js";
 import { renderDigiAiPage } from "./ui/page.js";
 
@@ -47,6 +50,17 @@ const FORBIDDEN_ECONOMIC_FIELDS = [
   "pricingVersion",
   "applicationId",
   "callerId",
+  "reservedUnits",
+  "consumedUnits",
+  "releasedUnits",
+  "meteringRate",
+  "meteringPolicyVersion",
+  "grant",
+  "adjustment",
+  "creditCost",
+  "balance",
+  "postedUnits",
+  "availableUnits",
 ] as const;
 
 function rejectClientRouteOverride(body: Record<string, unknown>) {
@@ -316,6 +330,120 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
 
   app.get("/internal/usage/summary", async (req, reply) => handleUsageSummary(req, reply, true));
   app.get("/v1/usage/summary", async (req, reply) => handleUsageSummary(req, reply, false));
+
+  app.get("/v1/credits/summary", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const query = (req.query ?? {}) as Record<string, unknown>;
+      const summary = await readOwnCreditSummary({
+        store,
+        config,
+        actor: identity.actor,
+        caller: identity.caller,
+        entitySlug: typeof query.entitySlug === "string" ? query.entitySlug : undefined,
+      });
+      return reply.send({ ok: true, service: "digi-ai", summary });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get("/v1/credits/ledger", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const query = (req.query ?? {}) as Record<string, unknown>;
+      const page = await readOwnCreditLedger({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        entitySlug: typeof query.entitySlug === "string" ? query.entitySlug : undefined,
+        operator: isOperatorCaller(config, identity.caller),
+        query: {
+          accountId: typeof query.accountId === "string" ? query.accountId : "",
+          after: typeof query.after === "string" ? query.after : undefined,
+          limit: typeof query.limit === "string" ? Number(query.limit) : undefined,
+        },
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...page });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/credits/grant", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      assertOperatorEconomics(config, identity.caller);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      if (typeof body.ownerType !== "string" || typeof body.ownerId !== "string" || typeof body.idempotencyKey !== "string") {
+        throw new DigiAiError(400, "invalid_request", "ownerType, ownerId, and idempotencyKey are required.");
+      }
+      const result = await store.grantCredits({
+        ownerType: body.ownerType === "tenant" ? "tenant" : "actor",
+        ownerId: String(body.ownerId),
+        tenantId: typeof body.tenantId === "string" ? body.tenantId : undefined,
+        units: Number(body.units),
+        idempotencyKey: String(body.idempotencyKey),
+        applicationId: identity.caller.id,
+        actorId: identity.actor.trustId,
+        authorizedBy: identity.caller.id,
+        reasonCode: typeof body.reasonCode === "string" ? body.reasonCode : "operator_grant",
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/credits/adjustment", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      assertOperatorEconomics(config, identity.caller);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      if (typeof body.idempotencyKey !== "string") {
+        throw new DigiAiError(400, "invalid_request", "idempotencyKey is required.");
+      }
+      const result = await store.adjustCredits({
+        accountId: typeof body.accountId === "string" ? body.accountId : undefined,
+        ownerType: body.ownerType === "tenant" ? "tenant" : body.ownerType === "actor" ? "actor" : undefined,
+        ownerId: typeof body.ownerId === "string" ? body.ownerId : undefined,
+        tenantId: typeof body.tenantId === "string" ? body.tenantId : undefined,
+        units: Number(body.units),
+        idempotencyKey: String(body.idempotencyKey),
+        applicationId: identity.caller.id,
+        actorId: identity.actor.trustId,
+        authorizedBy: identity.caller.id,
+        reasonCode: typeof body.reasonCode === "string" ? body.reasonCode : "operator_adjustment",
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get("/internal/credits/reconcile", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      assertOperatorEconomics(config, identity.caller);
+      return reply.send({ ok: true, service: "digi-ai", report: await reconcileCredits(store) });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/credits/acceptance", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const caller = authenticateCaller(config, req.headers);
+      if (!caller) throw new DigiAiError(401, "unauthenticated_caller", "Caller identity is required.");
+      if (config.isProd && !isOperatorCaller(config, caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for economic acceptance.");
+      }
+      const result = await runEconomicAcceptance(store, caller.id);
+      return reply.send({ service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
 
   app.get("/internal/usage/receipts/:id", async (req: FastifyRequest, reply: FastifyReply) => {
     try {
