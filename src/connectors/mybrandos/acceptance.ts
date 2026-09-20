@@ -56,5 +56,9 @@ export async function runMybrandosPublicReadAcceptance(input: {
     privacyClass: "PUBLIC" as const,
     hostedTrustIdPrivateRead: false,
     realWritesEnabled: false,
+    s2sAuthenticated: evidence.s2sAuthenticated === "true",
+    connectionIdSelected: Boolean(execution.connectionId),
+    credentialRef: typeof evidence.credentialRef === "string" ? evidence.credentialRef : undefined,
+    credentialExposed: false,
   };
 }

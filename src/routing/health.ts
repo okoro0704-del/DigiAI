@@ -192,9 +192,9 @@ export function buildHealthResponse(
     mybrandosConnector: {
       configured: Boolean(config.mybrandosUrl),
       mode: "read-only",
-      authenticated: "not-required-for-public",
+      s2sOutbound: Boolean(config.mybrandosUrl),
+      credentialRequired: true,
       realWritesEnabled: false,
-      s2sInbound: false,
     },
   };
 }

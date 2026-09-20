@@ -111,14 +111,16 @@ export async function invokeTool(input: {
   if (existing && existing.requestDigest !== digest) {
     throw new DigiAiError(403, "PARAMETER_MISMATCH", "Invocation input does not match the stored request digest.");
   }
-  resolveCredential({
-    required: resolved.operation.requiresCredential || resolved.connector.requiresCredential,
-    tenantId: execution.tenantId,
-    actorId: execution.actorId,
-    environment: resolved.connector.environment,
-    system: resolved.connector.system,
-    credentialRef: resolved.connector.credentialRef,
-  });
+  if (resolved.connector.connectorId !== "mybrandos") {
+    resolveCredential({
+      required: resolved.operation.requiresCredential || resolved.connector.requiresCredential,
+      tenantId: execution.tenantId,
+      actorId: execution.actorId,
+      environment: resolved.connector.environment,
+      system: resolved.connector.system,
+      credentialRef: resolved.connector.credentialRef,
+    });
+  }
   let connection;
   try {
     connection = (resolved.operation.requiresCredential || resolved.connector.requiresCredential || resolved.connector.connectorId === "mybrandos")
@@ -229,14 +231,16 @@ export function evaluateConnectorGate(input: {
   if ((input.environment === "PRODUCTION" && connector.environment !== "PRODUCTION") || (input.environment === "PRODUCTION" && operation.sideEffectClass !== "READ_ONLY")) {
     throw new DigiAiError(403, "ENVIRONMENT_DENIED", "A staging connector cannot be used for production.");
   }
-  resolveCredential({
-    required: operation.requiresCredential || connector.requiresCredential,
-    tenantId: input.tenantId,
-    actorId: input.actorId,
-    environment: connector.environment,
-    system: connector.system,
-    credentialRef: input.credentialRef ?? connector.credentialRef,
-  });
+  if (connector.connectorId !== "mybrandos") {
+    resolveCredential({
+      required: operation.requiresCredential || connector.requiresCredential,
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      environment: connector.environment,
+      system: connector.system,
+      credentialRef: input.credentialRef ?? connector.credentialRef,
+    });
+  }
   return { connector, operation };
 }
 
@@ -256,7 +260,8 @@ async function submit(
     await audit(store, { eventType: "MYBRANDOS_READ_SUBMITTED", toolInvocationId: invocation.toolInvocationId, connectorId: connector.connectorId, operationId: operation.operationId });
   }
   const started = Date.now();
-  if (operation.requiresCredential && invocation.connectionId) {
+  let serviceSecret: string | undefined;
+  if ((operation.requiresCredential || connector.connectorId === "mybrandos") && invocation.connectionId) {
     const connection = await store.getExternalConnection(invocation.connectionId);
     if (!connection) throw new DigiAiError(409, "CONNECTION_UNAVAILABLE", "No eligible connection is available.");
     const resolvedSecret = await resolveSecretForConnection({
@@ -266,12 +271,16 @@ async function submit(
       caller: { id: invocation.applicationId, via: "s2s" },
       operationId: operation.operationId,
     });
-    resolvedSecret.secret.reveal();
+    serviceSecret = resolvedSecret.secret.reveal();
+    await audit(store, { eventType: "CREDENTIAL_RESOLVED", toolInvocationId: invocation.toolInvocationId, connectorId: connector.connectorId });
+  } else if (connector.connectorId === "mybrandos") {
+    throw new DigiAiError(409, "CREDENTIAL_UNAVAILABLE", "mybrandOS S2S reads require a resolved platform credential.");
   }
   const result = connector.connectorId === "mybrandos"
     ? await runMybrandosConnector({
         operation,
         slug: String(invocation.input.slug ?? ""),
+        serviceSecret,
       })
     : runFixtureConnector({
     operation,
@@ -283,6 +292,7 @@ async function submit(
     resume: opts.resume,
     reconcile: opts.reconcile,
   });
+  serviceSecret = undefined;
   logEvent("tool_invocation", {
     connectorId: connector.connectorId,
     operationId: operation.operationId,

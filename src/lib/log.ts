@@ -4,7 +4,7 @@ export function logEvent(code: string, detail: Record<string, unknown> = {}) {
   const safe = redactValue({ ...detail }) as Record<string, unknown>;
   for (const key of Object.keys(safe)) {
     const value = String(safe[key] ?? "");
-    if (/sk-|api[_-]?key|secret|bearer |sig=|data:image|base64|TEST_SECRET_DO_NOT_LEAK/i.test(`${key}=${value}`)) {
+    if (/sk-|api[_-]?key|secret|bearer |authorization|sig=|data:image|base64|TEST_MYBRANDOS_S2S_SECRET_DO_NOT_LEAK|TEST_SECRET_DO_NOT_LEAK/i.test(`${key}=${value}`)) {
       safe[key] = "[redacted]";
     } else if (typeof safe[key] === "string") {
       safe[key] = redactText(value);

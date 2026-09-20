@@ -1,13 +1,14 @@
 import type { ConnectorCallResult } from "../fixtures.js";
 import type { DigiAiToolOperation } from "../../contracts/connectors.js";
 import { toolResponseDigest } from "../digest.js";
-import { requestMybrandosPublic, type MybrandosClientConfig } from "./client.js";
+import { requestMybrandosAuthenticated, type MybrandosClientConfig } from "./client.js";
 
 export const mybrandosReadStats = {
   submissions: 0,
   retries: 0,
   lastMethod: "",
   lastPath: "",
+  lastAuthenticated: false,
 };
 
 export function resetMybrandosReadStats() {
@@ -15,9 +16,10 @@ export function resetMybrandosReadStats() {
   mybrandosReadStats.retries = 0;
   mybrandosReadStats.lastMethod = "";
   mybrandosReadStats.lastPath = "";
+  mybrandosReadStats.lastAuthenticated = false;
 }
 
-let override: ((operation: "inspectPublicDigitalLife" | "listPublishedAssets", slug: string) => Promise<ReturnType<typeof requestMybrandosPublic>>) | undefined;
+let override: ((operation: "inspectPublicDigitalLife" | "listPublishedAssets", slug: string) => Promise<ReturnType<typeof requestMybrandosAuthenticated>>) | undefined;
 let boundConfig: MybrandosClientConfig | undefined;
 
 export function bindMybrandosReadClient(input: {
@@ -40,13 +42,25 @@ export function mybrandosClientConfig(): MybrandosClientConfig | undefined {
 export async function runMybrandosConnector(input: {
   operation: DigiAiToolOperation;
   slug: string;
+  serviceSecret?: string;
   config?: MybrandosClientConfig;
 }): Promise<ConnectorCallResult> {
   const op = input.operation.operationName === "listPublishedAssets" ? "listPublishedAssets" : "inspectPublicDigitalLife";
   mybrandosReadStats.submissions += 1;
   mybrandosReadStats.lastMethod = "GET";
-  mybrandosReadStats.lastPath = op === "listPublishedAssets" ? `/api/public/${input.slug}/assets` : `/api/public/${input.slug}`;
+  mybrandosReadStats.lastPath = op === "listPublishedAssets"
+    ? `/api/internal/digital-life/${input.slug}/assets`
+    : `/api/internal/digital-life/${input.slug}`;
+  mybrandosReadStats.lastAuthenticated = Boolean(input.serviceSecret) || Boolean(override);
   const config = input.config ?? boundConfig;
+  if (!override && !input.serviceSecret) {
+    return {
+      status: "FAILED",
+      submitted: false,
+      failureCode: "AUTHENTICATION_ERROR",
+      evidence: { system: "mybrandos", reasonCode: "MYBRANDOS_AUTH_FAILED", httpStatus: "401", attempts: "0", fallback: "denied" },
+    };
+  }
   if (!override && !config?.baseUrl) {
     return {
       status: "FAILED",
@@ -57,10 +71,11 @@ export async function runMybrandosConnector(input: {
   }
   const result = override
     ? await override(op, input.slug)
-    : await requestMybrandosPublic({
+    : await requestMybrandosAuthenticated({
         config: config!,
         slug: input.slug,
         operation: op,
+        serviceSecret: input.serviceSecret!,
       });
   if (!result.ok) {
     if (result.attempts > 1) mybrandosReadStats.retries += 1;
@@ -71,13 +86,15 @@ export async function runMybrandosConnector(input: {
           ? "RATE_LIMITED"
           : result.code === "MYBRANDOS_MALFORMED_RESPONSE"
             ? "MALFORMED_RESPONSE"
-            : result.code === "MYBRANDOS_ACCESS_DENIED" || result.code === "MYBRANDOS_AUTH_FAILED"
-              ? "AUTHORIZATION_ERROR"
-              : result.code === "MYBRANDOS_NOT_FOUND"
-                ? "PROVIDER_REJECTED"
-                : "TEMPORARY_UNAVAILABLE";
+            : result.code === "MYBRANDOS_AUTH_FAILED"
+              ? "AUTHENTICATION_ERROR"
+              : result.code === "MYBRANDOS_ACCESS_DENIED"
+                ? "AUTHORIZATION_ERROR"
+                : result.code === "MYBRANDOS_NOT_FOUND"
+                  ? "PROVIDER_REJECTED"
+                  : "TEMPORARY_UNAVAILABLE";
     return {
-      status: result.code === "MYBRANDOS_TIMEOUT" ? "FAILED" : "FAILED",
+      status: "FAILED",
       submitted: result.code !== "MYBRANDOS_TIMEOUT" && result.code !== "MYBRANDOS_UNAVAILABLE",
       failureCode,
       evidence: {
@@ -85,6 +102,8 @@ export async function runMybrandosConnector(input: {
         reasonCode: result.code,
         httpStatus: String(result.status),
         attempts: String(result.attempts),
+        s2sAuthenticated: "false",
+        fallback: "denied",
       },
     };
   }
@@ -92,8 +111,8 @@ export async function runMybrandosConnector(input: {
   return {
     status: "SUCCEEDED",
     submitted: true,
-    externalOperationRef: `mybrandos:public:${result.body.slug}`,
-    resultReference: `mybrandos:public:${result.body.slug}:${result.body.publishedAssetCount}`,
+    externalOperationRef: `mybrandos:s2s:${result.body.slug}`,
+    resultReference: `mybrandos:s2s:${result.body.slug}:${result.body.publishedAssetCount}`,
     evidence: {
       system: "mybrandos",
       operation: op,
@@ -101,6 +120,8 @@ export async function runMybrandosConnector(input: {
       publishedAssetCount: String(result.body.publishedAssetCount),
       privacyClass: "PUBLIC",
       factKind: "SOURCE_FACT",
+      s2sAuthenticated: "true",
+      authenticationMode: "S2S_SECRET",
       responseDigest: toolResponseDigest(output),
       retrievedAt: result.body.retrievedAt,
     },

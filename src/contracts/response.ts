@@ -235,8 +235,8 @@ export type HealthResponse = {
   mybrandosConnector?: {
     configured: boolean;
     mode: "read-only";
-    authenticated: "not-required-for-public" | "not-established";
+    s2sOutbound: boolean;
+    credentialRequired: boolean;
     realWritesEnabled: false;
-    s2sInbound: false;
   };
 };

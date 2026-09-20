@@ -1,7 +1,7 @@
 import { FIXTURE_SENTINEL_SECRET } from "./secret.js";
 
 const SENSITIVE_KEY = /^(api[_-]?key|token|access[_-]?token|refresh[_-]?token|password|client[_-]?secret|private[_-]?key|authorization|authorizationheader|secret|credential|bearer)$/i;
-const SENSITIVE_TEXT = /sk-[A-Za-z0-9_-]+|api[_-]?key|secret|bearer\s+[A-Za-z0-9._-]+|TEST_SECRET_DO_NOT_LEAK_[A-Za-z0-9_-]+/i;
+const SENSITIVE_TEXT = /sk-[A-Za-z0-9_-]+|api[_-]?key|secret|bearer\s+[A-Za-z0-9._-]+|TEST_MYBRANDOS_S2S_SECRET_DO_NOT_LEAK(?:_[A-Za-z0-9_-]+)?|TEST_SECRET_DO_NOT_LEAK_[A-Za-z0-9_-]+/i;
 
 const extraSentinels = new Set<string>([FIXTURE_SENTINEL_SECRET]);
 

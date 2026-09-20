@@ -111,19 +111,19 @@ function liveMybrandosConfigured(): boolean {
 const mybrandosConnector = connector({
   connectorId: "mybrandos",
   connectorType: "INTERNAL_SERVICE",
-  version: "3g-read-1",
+  version: "3g1-s2s-1",
   displayName: "mybrandOS",
   system: "mybrandos",
   environment: liveMybrandosEnvironment(),
   status: liveMybrandosConfigured() ? "CONFIGURED" : "UNAVAILABLE",
   supportedOperations: ["mybrandos.inspectPublicDigitalLife", "mybrandos.listPublishedAssets"],
-  authenticationMode: "none",
+  authenticationMode: "opaque-ref",
   capabilities: ["READ_ONLY", "PUBLIC"],
   idempotencySupport: "SUPPORTED",
   reconciliationSupport: "UNSUPPORTED",
   cancellationSupport: "UNSUPPORTED",
   healthState: "unknown",
-  requiresCredential: false,
+  requiresCredential: true,
   createdAt: NOW,
   updatedAt: NOW,
 });
@@ -305,7 +305,7 @@ const OPERATIONS: Record<string, DigiAiToolOperation> = {
     timeoutPolicy: { beforeSubmissionMs: 8000, afterSubmission: "UNKNOWN_OUTCOME" },
     enabled: true,
     version: "1",
-    requiresCredential: false,
+    requiresCredential: true,
   },
   "mybrandos.listPublishedAssets": {
     operationId: "mybrandos.listPublishedAssets",
@@ -322,7 +322,7 @@ const OPERATIONS: Record<string, DigiAiToolOperation> = {
     timeoutPolicy: { beforeSubmissionMs: 8000, afterSubmission: "UNKNOWN_OUTCOME" },
     enabled: true,
     version: "1",
-    requiresCredential: false,
+    requiresCredential: true,
   },
 };
 

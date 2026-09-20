@@ -1,8 +1,14 @@
 export const MYBRANDOS_CONNECTOR_ID = "mybrandos" as const;
 export const MYBRANDOS_SYSTEM = "mybrandos" as const;
-export const MYBRANDOS_S2S_AUTHENTICATION = "NOT_ESTABLISHED" as const;
+export const MYBRANDOS_S2S_AUTHENTICATION = "BEARER_SHARED_SECRET" as const;
 
 export const MYBRANDOS_PUBLIC_READ_SCOPE = "read:public";
+export const MYBRANDOS_S2S_READ_SCOPE = "mybrandos:read:published";
+export const MYBRANDOS_S2S_TEST_SENTINEL = "TEST_MYBRANDOS_S2S_SECRET_DO_NOT_LEAK";
+export const MYBRANDOS_CONNECTION_ID = "conn_mybrandos_platform_public";
+export const MYBRANDOS_CREDENTIAL_REF = "cred_mybrandos_s2s";
+export const MYBRANDOS_LOGICAL_NAME = "MYBRANDOS_S2S";
+export const MYBRANDOS_RAILWAY_ENV_NAME = "DIGI_AI_CONN_MYBRANDOS_S2S";
 
 export type MybrandosVisibilityClass = "PUBLIC" | "TENANT_INTERNAL" | "ACTOR_PRIVATE";
 
@@ -39,17 +45,17 @@ export const MYBRANDOS_REGISTERED_OPERATIONS = [
   {
     operationId: "mybrandos.inspectPublicDigitalLife",
     visibilityClass: "PUBLIC" as MybrandosVisibilityClass,
-    requiredIdentity: "none",
-    requiredScopes: [MYBRANDOS_PUBLIC_READ_SCOPE],
+    requiredIdentity: "service-principal",
+    requiredScopes: [MYBRANDOS_S2S_READ_SCOPE],
     sideEffectClass: "READ_ONLY",
-    domainInterface: "GET /api/public/:slug",
+    domainInterface: "GET /api/internal/digital-life/:slug",
   },
   {
     operationId: "mybrandos.listPublishedAssets",
     visibilityClass: "PUBLIC" as MybrandosVisibilityClass,
-    requiredIdentity: "none",
-    requiredScopes: [MYBRANDOS_PUBLIC_READ_SCOPE],
+    requiredIdentity: "service-principal",
+    requiredScopes: [MYBRANDOS_S2S_READ_SCOPE],
     sideEffectClass: "READ_ONLY",
-    domainInterface: "GET /api/public/:slug/assets",
+    domainInterface: "GET /api/internal/digital-life/:slug/assets",
   },
 ] as const;
