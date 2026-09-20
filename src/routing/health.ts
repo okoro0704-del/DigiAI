@@ -15,6 +15,7 @@ import { registryConfigured } from "../execution/registry.js";
 import { commercialPolicyConfigured, listMeteringPolicies } from "../credits/policy.js";
 import { enabledVoiceProfileCount } from "../registry/voices.js";
 import { activePricingVersions } from "../usage/pricing-catalog.js";
+import { credentialHealth } from "../credentials/factory.js";
 import { decideRoute } from "./policy.js";
 import { asPool, buildRuntimeRegistry } from "./runtime.js";
 
@@ -187,6 +188,7 @@ export function buildHealthResponse(
       unknownOutcome: { supported: true },
       reconciliation: { supported: true },
     },
+    credentials: credentialHealth(),
   };
 }
 

@@ -17,6 +17,13 @@ import type {
   DigiAiHumanDecision,
   DigiAiHumanDecisionRequest,
 } from "../contracts/authority.js";
+import type {
+  ConnectionAuditEvent,
+  CredentialMetadata,
+  DigiAiConnectionSelection,
+  DigiAiExternalConnection,
+  OAuthStateRecord,
+} from "../contracts/connections.js";
 import type { DigiAiToolInvocation, ToolAuditEvent } from "../contracts/connectors.js";
 import type {
   DigiAiActionExecution,
@@ -261,6 +268,45 @@ CREATE TABLE IF NOT EXISTS ai_tool_invocation_audit (
   event_id TEXT PRIMARY KEY,
   tool_invocation_id TEXT NOT NULL,
   event_type TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_external_connections (
+  connection_id TEXT PRIMARY KEY,
+  tenant_id TEXT,
+  actor_id TEXT,
+  application_id TEXT,
+  owner_type TEXT NOT NULL,
+  system TEXT NOT NULL,
+  environment TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_credential_metadata (
+  credential_ref TEXT PRIMARY KEY,
+  connection_id TEXT,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_connection_audit (
+  event_id TEXT PRIMARY KEY,
+  connection_id TEXT,
+  event_type TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_connection_selections (
+  selection_id TEXT PRIMARY KEY,
+  actor_id TEXT NOT NULL,
+  tenant_id TEXT,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_oauth_states (
+  state_id TEXT PRIMARY KEY,
+  state_hash TEXT NOT NULL UNIQUE,
   payload JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1393,6 +1439,153 @@ export class PostgresStore implements DigiAiStore {
     await this.ready();
     const result = await this.pool.query(`SELECT payload FROM ai_tool_invocation_audit WHERE tool_invocation_id = $1 ORDER BY created_at ASC`, [toolInvocationId]);
     return result.rows.map((row) => row.payload as ToolAuditEvent);
+  }
+
+  connectionStatus(): LedgerStatus {
+    return this.ledgerStatus();
+  }
+
+  async putExternalConnection(row: DigiAiExternalConnection) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_external_connections (connection_id, tenant_id, actor_id, application_id, owner_type, system, environment, payload, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10)
+       ON CONFLICT (connection_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id, actor_id = EXCLUDED.actor_id, application_id = EXCLUDED.application_id,
+         owner_type = EXCLUDED.owner_type, system = EXCLUDED.system, environment = EXCLUDED.environment, payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`,
+      [row.connectionId, row.tenantId ?? null, row.actorId ?? null, row.applicationId ?? null, row.ownerType, row.system, row.environment, JSON.stringify(row), row.createdAt, row.updatedAt],
+    );
+  }
+
+  async getExternalConnection(connectionId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_external_connections WHERE connection_id = $1`, [connectionId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiExternalConnection) : null;
+  }
+
+  async listExternalConnections(query: {
+    tenantId?: string;
+    actorId?: string;
+    applicationId?: string;
+    system?: string;
+    environment?: string;
+  } = {}) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_external_connections ORDER BY created_at ASC`);
+    return result.rows
+      .map((row) => row.payload as DigiAiExternalConnection)
+      .filter((row) => {
+        if (query.system && row.system !== query.system) return false;
+        if (query.environment && row.environment !== query.environment) return false;
+        return (
+          (row.ownerType === "ACTOR" && row.actorId === query.actorId) ||
+          (row.ownerType === "TENANT" && row.tenantId === query.tenantId) ||
+          (row.ownerType === "APPLICATION" && row.applicationId === query.applicationId) ||
+          row.ownerType === "PLATFORM_SERVICE"
+        );
+      });
+  }
+
+  async findConnectionByIdempotency(applicationId: string, actorId: string, idempotencyKey: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_external_connections`);
+    return (
+      result.rows
+        .map((row) => row.payload as DigiAiExternalConnection)
+        .find((row) => row.applicationId === applicationId && row.idempotencyKey === idempotencyKey && (row.actorId === actorId || row.ownerType !== "ACTOR")) ?? null
+    );
+  }
+
+  async lockExternalConnection<T>(connectionId: string, fn: (row: DigiAiExternalConnection) => Promise<T>): Promise<T> {
+    return this.withCreditTx(async (client) => {
+      const found = await client.query(`SELECT payload FROM ai_external_connections WHERE connection_id = $1 FOR UPDATE`, [connectionId]);
+      if (!found.rows[0]) throw new DigiAiError(404, "not_found", "Connection was not found.");
+      return fn(found.rows[0].payload as DigiAiExternalConnection);
+    });
+  }
+
+  async putCredentialMetadata(row: CredentialMetadata) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_credential_metadata (credential_ref, payload, created_at, updated_at)
+       VALUES ($1,$2::jsonb,$3,$4)
+       ON CONFLICT (credential_ref) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`,
+      [row.credentialRef, JSON.stringify(row), row.createdAt, row.updatedAt],
+    );
+  }
+
+  async getCredentialMetadata(credentialRef: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_credential_metadata WHERE credential_ref = $1`, [credentialRef]);
+    return result.rows[0] ? (result.rows[0].payload as CredentialMetadata) : null;
+  }
+
+  async listCredentialMetadata() {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_credential_metadata ORDER BY created_at ASC`);
+    return result.rows.map((row) => row.payload as CredentialMetadata);
+  }
+
+  async putConnectionSelection(row: DigiAiConnectionSelection) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_connection_selections (selection_id, actor_id, tenant_id, payload, created_at)
+       VALUES ($1,$2,$3,$4::jsonb,$5)
+       ON CONFLICT (selection_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      [row.selectionId, row.actorId, row.tenantId ?? null, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async getConnectionSelection(selectionId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_connection_selections WHERE selection_id = $1`, [selectionId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiConnectionSelection) : null;
+  }
+
+  async putOAuthState(row: OAuthStateRecord) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_oauth_states (state_id, state_hash, payload, created_at) VALUES ($1,$2,$3::jsonb,$4)
+       ON CONFLICT (state_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      [row.stateId, row.stateHash, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async getOAuthState(stateHash: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_oauth_states WHERE state_hash = $1`, [stateHash]);
+    return result.rows[0] ? (result.rows[0].payload as OAuthStateRecord) : null;
+  }
+
+  async consumeOAuthState(stateHash: string) {
+    return this.withCreditTx(async (client) => {
+      const found = await client.query(`SELECT payload FROM ai_oauth_states WHERE state_hash = $1 FOR UPDATE`, [stateHash]);
+      if (!found.rows[0]) return null;
+      const row = found.rows[0].payload as OAuthStateRecord;
+      if (row.consumedAt || row.expiresAt <= nowIso()) return null;
+      row.consumedAt = nowIso();
+      await client.query(`UPDATE ai_oauth_states SET payload = $2::jsonb WHERE state_hash = $1`, [stateHash, JSON.stringify(row)]);
+      return row;
+    });
+  }
+
+  async appendConnectionAudit(row: ConnectionAuditEvent) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_connection_audit (event_id, connection_id, event_type, payload, created_at) VALUES ($1,$2,$3,$4::jsonb,$5)`,
+      [row.eventId, row.connectionId ?? null, row.eventType, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async listConnectionAudit(query: { connectionId?: string; credentialRef?: string } = {}) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_connection_audit ORDER BY created_at ASC`);
+    return result.rows
+      .map((row) => row.payload as ConnectionAuditEvent)
+      .filter((row) => {
+        if (query.connectionId && row.connectionId !== query.connectionId) return false;
+        if (query.credentialRef && row.credentialRef !== query.credentialRef) return false;
+        return true;
+      });
   }
 }
 

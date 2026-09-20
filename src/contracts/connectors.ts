@@ -144,6 +144,9 @@ export type DigiAiToolInvocationRequest = {
   requestDigest: string;
   idempotencyKey: string;
   input: Record<string, unknown>;
+  connectionId?: string;
+  credentialRef?: string;
+  authenticationMode?: string;
   createdAt: string;
 };
 

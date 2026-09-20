@@ -132,6 +132,10 @@ export function loadConfig() {
     orchestrationMaxStepAttempts: Number(env("DIGI_AI_ORCH_MAX_STEP_ATTEMPTS", "1")),
     orchestrationMaxInstructionChars: Number(env("DIGI_AI_ORCH_MAX_INSTRUCTION", "4000")),
     orchestrationMaxDesiredOutputs: Number(env("DIGI_AI_ORCH_MAX_OUTPUTS", "6")),
+    oauthRedirectAllowlist: (env("DIGI_AI_OAUTH_REDIRECT_ALLOWLIST", "https://digiai.local/oauth/callback,http://127.0.0.1/oauth/callback") || "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean),
   };
 }
 

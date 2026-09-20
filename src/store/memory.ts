@@ -18,6 +18,13 @@ import type {
   DigiAiHumanDecision,
   DigiAiHumanDecisionRequest,
 } from "../contracts/authority.js";
+import type {
+  ConnectionAuditEvent,
+  CredentialMetadata,
+  DigiAiConnectionSelection,
+  DigiAiExternalConnection,
+  OAuthStateRecord,
+} from "../contracts/connections.js";
 import type { DigiAiToolInvocation, ToolAuditEvent } from "../contracts/connectors.js";
 import type {
   DigiAiActionExecution,
@@ -67,6 +74,11 @@ export class MemoryStore implements DigiAiStore {
   readonly executionAudit: ExecutionAuditEvent[] = [];
   readonly toolInvocations: DigiAiToolInvocation[] = [];
   readonly toolAudit: ToolAuditEvent[] = [];
+  readonly externalConnections: DigiAiExternalConnection[] = [];
+  readonly credentialMetadata: CredentialMetadata[] = [];
+  readonly connectionSelections: DigiAiConnectionSelection[] = [];
+  readonly oauthStates: OAuthStateRecord[] = [];
+  readonly connectionAudit: ConnectionAuditEvent[] = [];
   private writable = true;
   private readonly creditLocks = new Map<string, Promise<void>>();
   private readonly authorityLocks = new Map<string, Promise<void>>();
@@ -803,6 +815,106 @@ export class MemoryStore implements DigiAiStore {
 
   async listToolAudit(toolInvocationId: string) {
     return this.toolAudit.filter((row) => row.toolInvocationId === toolInvocationId);
+  }
+
+  connectionStatus(): LedgerStatus {
+    return this.ledgerStatus();
+  }
+
+  async putExternalConnection(row: DigiAiExternalConnection) {
+    const idx = this.externalConnections.findIndex((item) => item.connectionId === row.connectionId);
+    if (idx >= 0) this.externalConnections[idx] = row;
+    else this.externalConnections.push(row);
+  }
+
+  async getExternalConnection(connectionId: string) {
+    return this.externalConnections.find((row) => row.connectionId === connectionId) ?? null;
+  }
+
+  async listExternalConnections(query: {
+    tenantId?: string;
+    actorId?: string;
+    applicationId?: string;
+    system?: string;
+    environment?: string;
+  } = {}) {
+    return this.externalConnections.filter((row) => {
+      if (query.system && row.system !== query.system) return false;
+      if (query.environment && row.environment !== query.environment) return false;
+      const ownerMatch =
+        (row.ownerType === "ACTOR" && row.actorId === query.actorId) ||
+        (row.ownerType === "TENANT" && row.tenantId === query.tenantId) ||
+        (row.ownerType === "APPLICATION" && row.applicationId === query.applicationId) ||
+        row.ownerType === "PLATFORM_SERVICE";
+      return ownerMatch;
+    });
+  }
+
+  async findConnectionByIdempotency(applicationId: string, actorId: string, idempotencyKey: string) {
+    return this.externalConnections.find((row) => row.applicationId === applicationId && row.idempotencyKey === idempotencyKey && (row.actorId === actorId || row.ownerType !== "ACTOR")) ?? null;
+  }
+
+  async lockExternalConnection<T>(connectionId: string, fn: (row: DigiAiExternalConnection) => Promise<T>): Promise<T> {
+    return this.withAuthorityLock(`conn:${connectionId}`, async () => {
+      const row = this.externalConnections.find((item) => item.connectionId === connectionId);
+      if (!row) throw new DigiAiError(404, "not_found", "Connection was not found.");
+      return fn(row);
+    });
+  }
+
+  async putCredentialMetadata(row: CredentialMetadata) {
+    const idx = this.credentialMetadata.findIndex((item) => item.credentialRef === row.credentialRef);
+    if (idx >= 0) this.credentialMetadata[idx] = row;
+    else this.credentialMetadata.push(row);
+  }
+
+  async getCredentialMetadata(credentialRef: string) {
+    return this.credentialMetadata.find((row) => row.credentialRef === credentialRef) ?? null;
+  }
+
+  async listCredentialMetadata() {
+    return [...this.credentialMetadata];
+  }
+
+  async putConnectionSelection(row: DigiAiConnectionSelection) {
+    const idx = this.connectionSelections.findIndex((item) => item.selectionId === row.selectionId);
+    if (idx >= 0) this.connectionSelections[idx] = row;
+    else this.connectionSelections.push(row);
+  }
+
+  async getConnectionSelection(selectionId: string) {
+    return this.connectionSelections.find((row) => row.selectionId === selectionId) ?? null;
+  }
+
+  async putOAuthState(row: OAuthStateRecord) {
+    this.oauthStates.push(row);
+  }
+
+  async getOAuthState(stateHash: string) {
+    const row = this.oauthStates.find((item) => item.stateHash === stateHash);
+    return row ? { ...row, scopes: [...row.scopes] } : null;
+  }
+
+  async consumeOAuthState(stateHash: string) {
+    return this.withAuthorityLock(`oauth:${stateHash}`, async () => {
+      const row = this.oauthStates.find((item) => item.stateHash === stateHash);
+      if (!row || row.consumedAt) return null;
+      if (row.expiresAt <= nowIso()) return null;
+      row.consumedAt = nowIso();
+      return { ...row, scopes: [...row.scopes] };
+    });
+  }
+
+  async appendConnectionAudit(row: ConnectionAuditEvent) {
+    this.connectionAudit.push(row);
+  }
+
+  async listConnectionAudit(query: { connectionId?: string; credentialRef?: string } = {}) {
+    return this.connectionAudit.filter((row) => {
+      if (query.connectionId && row.connectionId !== query.connectionId) return false;
+      if (query.credentialRef && row.credentialRef !== query.credentialRef) return false;
+      return true;
+    });
   }
 
   private async withAuthorityLock<T>(key: string, fn: () => Promise<T>): Promise<T> {

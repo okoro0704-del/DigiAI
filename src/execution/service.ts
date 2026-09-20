@@ -30,6 +30,7 @@ export async function executeAuthorizedAction(input: {
   fixtureMode?: FixtureMode;
   allowFixture: boolean;
   deferInvocation?: boolean;
+  selectionId?: string;
   now?: string;
 }) {
   const now = input.now ?? nowIso();
@@ -131,6 +132,7 @@ export async function executeAuthorizedAction(input: {
     attemptCount: 0,
     externalIdempotencyKey: executionId,
     fixtureMode: input.allowFixture && isFixtureMode(input.fixtureMode) ? input.fixtureMode : "SUCCESS",
+    connectionSelectionId: input.selectionId,
     createdAt: now,
     updatedAt: now,
   };
@@ -483,5 +485,6 @@ export function parseExecuteBody(raw: unknown, allowFixture: boolean) {
     parameters: body.parameters && typeof body.parameters === "object" ? (body.parameters as ActionParameters) : undefined,
     fixtureMode: allowFixture && isFixtureMode(body.fixtureMode) ? body.fixtureMode : undefined,
     deferInvocation: allowFixture && body.deferInvocation === true,
+    selectionId: typeof body.selectionId === "string" ? body.selectionId : undefined,
   };
 }

@@ -105,6 +105,9 @@ export type DigiAiActionExecution = {
   toolInvocationId?: string;
   connectorId?: string;
   operationId?: string;
+  connectionId?: string;
+  credentialRef?: string;
+  connectionSelectionId?: string;
   createdAt: string;
   updatedAt: string;
 };

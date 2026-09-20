@@ -26,6 +26,13 @@ import type {
   DigiAiActionExecutionRequest,
   ExecutionAuditEvent,
 } from "../contracts/execution.js";
+import type {
+  ConnectionAuditEvent,
+  CredentialMetadata,
+  DigiAiConnectionSelection,
+  DigiAiExternalConnection,
+  OAuthStateRecord,
+} from "../contracts/connections.js";
 import type { DigiAiToolInvocation, ToolAuditEvent } from "../contracts/connectors.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus, UsageAggregate } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
@@ -207,4 +214,26 @@ export interface DigiAiStore {
   getToolInvocationByExecution(executionId: string): Promise<DigiAiToolInvocation | null>;
   appendToolAudit(row: ToolAuditEvent): Promise<void>;
   listToolAudit(toolInvocationId: string): Promise<ToolAuditEvent[]>;
+  connectionStatus(): LedgerStatus;
+  putExternalConnection(row: DigiAiExternalConnection): Promise<void>;
+  getExternalConnection(connectionId: string): Promise<DigiAiExternalConnection | null>;
+  listExternalConnections(query?: {
+    tenantId?: string;
+    actorId?: string;
+    applicationId?: string;
+    system?: string;
+    environment?: string;
+  }): Promise<DigiAiExternalConnection[]>;
+  findConnectionByIdempotency(applicationId: string, actorId: string, idempotencyKey: string): Promise<DigiAiExternalConnection | null>;
+  lockExternalConnection<T>(connectionId: string, fn: (row: DigiAiExternalConnection) => Promise<T>): Promise<T>;
+  putCredentialMetadata(row: CredentialMetadata): Promise<void>;
+  getCredentialMetadata(credentialRef: string): Promise<CredentialMetadata | null>;
+  listCredentialMetadata(): Promise<CredentialMetadata[]>;
+  putConnectionSelection(row: DigiAiConnectionSelection): Promise<void>;
+  getConnectionSelection(selectionId: string): Promise<DigiAiConnectionSelection | null>;
+  putOAuthState(row: OAuthStateRecord): Promise<void>;
+  getOAuthState(stateHash: string): Promise<OAuthStateRecord | null>;
+  consumeOAuthState(stateHash: string): Promise<OAuthStateRecord | null>;
+  appendConnectionAudit(row: ConnectionAuditEvent): Promise<void>;
+  listConnectionAudit(query?: { connectionId?: string; credentialRef?: string }): Promise<ConnectionAuditEvent[]>;
 }

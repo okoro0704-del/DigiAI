@@ -162,6 +162,7 @@ function makeFixture(id: string, actionType: ActionType, actionClass: ActionClas
           execution: context.execution,
           actor: context.actor,
           caller: context.caller,
+          selectionId: context.execution.connectionSelectionId,
         });
         const mapped = mapToolToExecutor(result);
         if (mapped.submitted) recordEffect(context.externalIdempotencyKey);
@@ -178,6 +179,7 @@ function makeFixture(id: string, actionType: ActionType, actionClass: ActionClas
           actor: context.actor,
           caller: context.caller,
           resume: true,
+          selectionId: context.execution.connectionSelectionId,
         });
         return mapToolToExecutor(result);
       }

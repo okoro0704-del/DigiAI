@@ -10,6 +10,8 @@ import { clip, newId, nowIso } from "../lib/crypto.js";
 import { DigiAiError } from "../lib/http.js";
 import { logEvent } from "../lib/log.js";
 import type { DigiAiStore } from "../store/types.js";
+import { requiredScopesForOperation } from "../connections/lifecycle.js";
+import { resolveEligibleConnection, resolveSecretForConnection } from "../connections/resolve.js";
 import { resolveCredential } from "./credentials.js";
 import { toolRequestDigest, toolResponseDigest } from "./digest.js";
 import { runFixtureConnector } from "./fixtures.js";
@@ -18,8 +20,26 @@ import { assertOperationAllowed } from "./policy.js";
 import { getConnector, getOperation, resolveByActionType, sanitizedCatalog } from "./registry.js";
 import { minimizedInput, validateToolInput, validateToolOutput } from "./validate.js";
 
+const FORBIDDEN_CREDENTIAL_FIELDS = [
+  "connectorId",
+  "operationId",
+  "credentialRef",
+  "credential",
+  "apiKey",
+  "accessToken",
+  "refreshToken",
+  "password",
+  "clientSecret",
+  "privateKey",
+  "Authorization",
+  "authorization",
+  "token",
+  "secret",
+  "connectionId",
+];
+
 export function rejectConnectorSpoof(body: Record<string, unknown>) {
-  if ("connectorId" in body || "operationId" in body || "credentialRef" in body || "credential" in body || "apiKey" in body) {
+  if (FORBIDDEN_CREDENTIAL_FIELDS.some((field) => field in body)) {
     throw new DigiAiError(400, "invalid_request", "Connector, operation, and credential selection is reserved to Digi AI.");
   }
   assertNotArbitraryNetwork({
@@ -38,6 +58,7 @@ export async function invokeTool(input: {
   caller: CallerApplication;
   resume?: boolean;
   reconcile?: boolean;
+  selectionId?: string;
 }): Promise<DigiAiToolInvocationResult> {
   const execution = await ownedExecution(input.store, input.execution.executionId, input.actor, input.caller);
   const existing = await input.store.getToolInvocationByExecution(execution.executionId);
@@ -82,6 +103,20 @@ export async function invokeTool(input: {
     system: resolved.connector.system,
     credentialRef: resolved.connector.credentialRef,
   });
+  const connection = (resolved.operation.requiresCredential || resolved.connector.requiresCredential)
+    ? await resolveEligibleConnection({
+        store: input.store,
+        actor: input.actor,
+        caller: input.caller,
+        system: resolved.connector.system,
+        connectorId: resolved.connector.connectorId,
+        environment: resolved.connector.environment === "PRODUCTION" ? "PRODUCTION" : resolved.connector.environment === "FIXTURE" ? "TEST" : "STAGING",
+        requiredScopes: requiredScopesForOperation(resolved.operation.operationId),
+        selectionId: input.selectionId,
+        executionId: execution.executionId,
+        objectiveId: execution.objectiveId,
+      })
+    : undefined;
 
   const now = nowIso();
   const invocation: DigiAiToolInvocation = {
@@ -98,6 +133,9 @@ export async function invokeTool(input: {
     requestDigest: digest,
     idempotencyKey: execution.externalIdempotencyKey,
     input: minimized,
+    connectionId: connection?.connectionId,
+    credentialRef: connection?.credentialRef,
+    authenticationMode: connection?.authenticationMode,
     status: "PENDING",
     createdAt: now,
     updatedAt: now,
@@ -179,6 +217,18 @@ async function submit(
   await store.putToolInvocation(invocation);
   await audit(store, { eventType: "TOOL_SUBMISSION_STARTED", toolInvocationId: invocation.toolInvocationId, status: "SUBMITTING" });
   const started = Date.now();
+  if (operation.requiresCredential && invocation.connectionId) {
+    const connection = await store.getExternalConnection(invocation.connectionId);
+    if (!connection) throw new DigiAiError(409, "CONNECTION_UNAVAILABLE", "No eligible connection is available.");
+    const resolvedSecret = await resolveSecretForConnection({
+      store,
+      connection,
+      actor: { trustId: invocation.actorId, tenantId: invocation.tenantId },
+      caller: { id: invocation.applicationId, via: "s2s" },
+      operationId: operation.operationId,
+    });
+    resolvedSecret.secret.reveal();
+  }
   const result = runFixtureConnector({
     operation,
     executionId: execution.executionId,
@@ -265,6 +315,9 @@ export function inspectSafe(row: DigiAiToolInvocation) {
     resultReference: row.resultReference,
     failureCode: row.failureCode,
     requestDigest: row.requestDigest,
+    connectionId: row.connectionId,
+    credentialRef: row.credentialRef,
+    authenticationMode: row.authenticationMode,
     createdAt: row.createdAt,
     targetSummary: clip(`${String(row.input.resourceType ?? "")}:${String(row.input.resourceId ?? "")}`, 80),
   };

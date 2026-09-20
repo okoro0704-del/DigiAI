@@ -218,4 +218,18 @@ export type HealthResponse = {
     unknownOutcome: { supported: true };
     reconciliation: { supported: true };
   };
+  credentials?: {
+    secureBackend: {
+      configured: true;
+      type: "railway-platform-service" | "memory-fixture-only";
+    };
+    connections: { supported: true };
+    oauthFoundation: { supported: true };
+    rotation: { supported: true };
+    revocation: { supported: true };
+    secretResolution: { serverSideOnly: true };
+    realConsequentialActions: { enabled: false };
+    dynamicUserOAuthVault: { supported: boolean };
+    platformServiceCredentials: { supported: boolean };
+  };
 };

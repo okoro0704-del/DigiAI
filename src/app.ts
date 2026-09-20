@@ -22,6 +22,26 @@ import { handleAsk } from "./intelligence/engine.js";
 import { handleTwinBrief } from "./intelligence/twin-brief.js";
 import { newId } from "./lib/crypto.js";
 import { DigiAiError } from "./lib/http.js";
+import { sanitizePublicMessage } from "./credentials/redact.js";
+import { bindSecureCredentialBackend, createSecureCredentialBackend, currentSecureCredentialBackend } from "./credentials/factory.js";
+import { RailwayPlatformServiceBackend } from "./credentials/railway.js";
+import {
+  completeOAuth,
+  createConnection,
+  inspectConnection,
+  listConnections,
+  parseConnectionCreateBody,
+  publicConnectionPayload,
+  revokeConnection,
+  rotateConnection,
+  startOAuth,
+} from "./connections/service.js";
+
+function inspectConnectionPayload(connection: import("./contracts/connections.js").DigiAiExternalConnection) {
+  return publicConnectionPayload(connection);
+}
+import { bindConnectionSelection } from "./connections/resolve.js";
+import { isConnectionEnvironment } from "./contracts/connections.js";
 import { createProviders } from "./providers/router.js";
 import type { IntelligenceProvider } from "./providers/types.js";
 import { createStore } from "./store/index.js";
@@ -69,6 +89,7 @@ export type DigiAiAppOptions = {
   diginews?: DigiNewsReader;
   store?: DigiAiStore;
   drive?: SovereignDrive;
+  credentialBackend?: import("./credentials/backend.js").SecureCredentialBackend;
 };
 
 const FORBIDDEN_ECONOMIC_FIELDS = [
@@ -314,14 +335,33 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
     drive: options.drive ?? createDrive(config),
   };
   const resolver = options.resolver ?? createTrustIdResolver(config);
+  const credentialBackend = options.credentialBackend ?? createSecureCredentialBackend(config);
+  bindSecureCredentialBackend(credentialBackend);
+  void store.listCredentialMetadata().then((rows) => {
+    if (credentialBackend instanceof RailwayPlatformServiceBackend) credentialBackend.hydrate(rows);
+  }).catch(() => undefined);
 
   app.get("/health", async (): Promise<HealthResponse> => buildHealthResponse(config, pool, store, deps.drive));
 
   const sendError = (reply: FastifyReply, err: unknown, extra: Record<string, unknown> = {}) => {
+    const attached = err && typeof err === "object" && "extra" in err ? (err as { extra?: Record<string, unknown> }).extra ?? {} : {};
     if (err instanceof DigiAiError) {
-      return reply.code(err.status).send({ ok: false, service: "digi-ai", error: err.code, message: err.message, ...extra });
+      return reply.code(err.status).send({
+        ok: false,
+        service: "digi-ai",
+        error: err.code,
+        message: sanitizePublicMessage(err.message),
+        ...attached,
+        ...extra,
+      });
     }
-    return reply.code(500).send({ ok: false, service: "digi-ai", error: "internal_error", message: "Digi AI could not complete that request.", ...extra });
+    return reply.code(500).send({
+      ok: false,
+      service: "digi-ai",
+      error: "internal_error",
+      message: "Digi AI could not complete that request.",
+      ...extra,
+    });
   };
 
   const handleUsageSummary = async (req: FastifyRequest, reply: FastifyReply, operatorOnly: boolean) => {
@@ -693,6 +733,164 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         executionId: String((req.params as { executionId?: string }).executionId || ""),
       });
       return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get("/v1/connections", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      return reply.send({ ok: true, service: "digi-ai", connections: await listConnections({ store, actor: identity.actor, caller: identity.caller }) });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get("/v1/connections/:connectionId", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const connection = await inspectConnection({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        connectionId: String((req.params as { connectionId?: string }).connectionId || ""),
+      });
+      return reply.send({ ok: true, service: "digi-ai", connection });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/v1/connections/:connectionId/revoke", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const connection = await revokeConnection({
+        store,
+        config,
+        actor: identity.actor,
+        caller: identity.caller,
+        connectionId: String((req.params as { connectionId?: string }).connectionId || ""),
+      });
+      return reply.send({ ok: true, service: "digi-ai", connection: inspectConnectionPayload(connection) });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/connections", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      if (config.isProd && !isOperatorCaller(config, identity.caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required to create connections.");
+      }
+      const connection = await createConnection({
+        store,
+        config,
+        actor: identity.actor,
+        caller: identity.caller,
+        body: parseConnectionCreateBody(req.body),
+      });
+      return reply.code(201).send({ ok: true, service: "digi-ai", connection: inspectConnectionPayload(connection) });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/connections/:connectionId/rotate", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      if ("secret" in body && config.isProd) throw new DigiAiError(400, "invalid_request", "Secrets cannot be submitted through the API.");
+      const connection = await rotateConnection({
+        store,
+        config,
+        actor: identity.actor,
+        caller: identity.caller,
+        connectionId: String((req.params as { connectionId?: string }).connectionId || ""),
+        secret: config.isProd ? undefined : typeof body.secret === "string" ? body.secret : undefined,
+        logicalName: typeof body.logicalName === "string" ? body.logicalName : undefined,
+      });
+      return reply.send({ ok: true, service: "digi-ai", connection: inspectConnectionPayload(connection) });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/connections/:connectionId/select", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      const selection = await bindConnectionSelection({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        connectionId: String((req.params as { connectionId?: string }).connectionId || ""),
+        system: String(body.system || ""),
+        environment: isConnectionEnvironment(body.environment) ? body.environment : "STAGING",
+        eligibleConnectionIds: Array.isArray(body.eligibleConnectionIds) ? body.eligibleConnectionIds.filter((row): row is string => typeof row === "string") : [],
+        objectiveId: typeof body.objectiveId === "string" ? body.objectiveId : undefined,
+        executionId: typeof body.executionId === "string" ? body.executionId : undefined,
+      });
+      return reply.send({ ok: true, service: "digi-ai", selection: { selectionId: selection.selectionId, expiresAt: selection.expiresAt, system: selection.system, environment: selection.environment } });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/oauth/initiate", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      const started = await startOAuth({
+        store,
+        config,
+        actor: identity.actor,
+        caller: identity.caller,
+        system: String(body.system || "fixture-secured"),
+        environment: isConnectionEnvironment(body.environment) ? body.environment : "STAGING",
+        redirectUri: String(body.redirectUri || ""),
+        scopes: Array.isArray(body.scopes) ? body.scopes.filter((row): row is string => typeof row === "string") : ["read:catalog"],
+      });
+      return reply.send({ ok: true, service: "digi-ai", oauth: started });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/oauth/callback", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      const connection = await completeOAuth({
+        store,
+        config,
+        actor: identity.actor,
+        caller: identity.caller,
+        state: String(body.state || ""),
+        redirectUri: String(body.redirectUri || ""),
+        codeVerifier: typeof body.codeVerifier === "string" ? body.codeVerifier : undefined,
+        fixtureSecret: config.isProd ? undefined : typeof body.fixtureSecret === "string" ? body.fixtureSecret : undefined,
+      });
+      return reply.send({ ok: true, service: "digi-ai", connection });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/credentials/probe", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      if (!isOperatorCaller(config, identity.caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required to probe credential resolution.");
+      }
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      const credentialRef = String(body.credentialRef || "");
+      const metadata = await store.getCredentialMetadata(credentialRef);
+      if (!metadata) throw new DigiAiError(404, "not_found", "Credential metadata was not found.");
+      const secret = await currentSecureCredentialBackend().resolveUsingMetadata(metadata);
+      secret.reveal();
+      return reply.send({ ok: true, service: "digi-ai", resolved: true, redacted: true, generation: secret.generation });
     } catch (err) {
       return sendError(reply, err);
     }

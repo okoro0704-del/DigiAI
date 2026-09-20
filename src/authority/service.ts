@@ -16,6 +16,7 @@ import type {
   HumanDecisionValue,
 } from "../contracts/authority.js";
 import { AUTHORITY_POLICY_ID, AUTHORITY_POLICY_VERSION, isActionClass, isActionType } from "../contracts/authority.js";
+import { rejectConnectorSpoof } from "../connectors/service.js";
 import { clip, newId, nowIso } from "../lib/crypto.js";
 import { DigiAiError } from "../lib/http.js";
 import type { DigiAiStore } from "../store/types.js";
@@ -564,6 +565,7 @@ export function parseActionBody(raw: unknown): ProposeActionInput {
   if (!raw || typeof raw !== "object") throw new DigiAiError(400, "invalid_request", "JSON body is required.");
   const body = raw as Record<string, unknown>;
   rejectIdentitySpoof(body);
+  rejectConnectorSpoof(body);
   if ("provider" in body || "model" in body) throw new DigiAiError(400, "invalid_request", "Provider and model selection is reserved to Digi AI.");
   const target = body.target && typeof body.target === "object" ? (body.target as ActionTarget) : undefined;
   if (!isActionClass(body.actionClass) || !isActionType(body.actionType) || !target) {
