@@ -151,10 +151,10 @@ test("3G registry, read-only operations, no arbitrary fetch, S2S bearer required
   expect(getOperation("mybrandos.inspectPublicDigitalLife")?.sideEffectClass).toBe("READ_ONLY");
   expect(getOperation("mybrandos.listPublishedAssets")?.sideEffectClass).toBe("READ_ONLY");
   expect(getOperation("mybrandos.publish")).toBeUndefined();
-  expect(getOperation("mybrandos.createDraft")).toBeUndefined();
   expect(getOperation("mybrandos.deleteAsset")).toBeUndefined();
-  expect(registeredOperations().filter((row) => row.connectorId === "mybrandos").every((row) => row.sideEffectClass === "READ_ONLY")).toBe(true);
-  expect(MYBRANDOS_REGISTERED_OPERATIONS.every((row) => row.visibilityClass === "PUBLIC")).toBe(true);
+  expect(getOperation("mybrandos.createDraft")?.sideEffectClass).toBe("REVERSIBLE_WRITE");
+  expect(registeredOperations().filter((row) => row.connectorId === "mybrandos" && row.operationId !== "mybrandos.createDraft").every((row) => row.sideEffectClass === "READ_ONLY")).toBe(true);
+  expect(MYBRANDOS_REGISTERED_OPERATIONS.filter((row) => row.operationId !== "mybrandos.createDraft").every((row) => row.visibilityClass === "PUBLIC")).toBe(true);
   expect(sanitizedCatalog().some((row) => row.operationId === "mybrandos.inspectPublicDigitalLife")).toBe(true);
   expect(sanitizedCatalog().every((row) => !("credentialRef" in row) && !("url" in row))).toBe(true);
   expect(() => rejectConnectorSpoof({ url: "https://mybrandos-production.up.railway.app/api/public/x" })).toThrow();

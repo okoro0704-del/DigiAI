@@ -4,6 +4,7 @@ import {
   ACTION_SCHEMA_VERSION,
   isFixtureActionType,
   isFixtureMode,
+  isMybrandosGovernedActionType,
   isMybrandosReadActionType,
   type DigiAiActionExecution,
   type DigiAiActionExecutionReceipt,
@@ -76,7 +77,7 @@ export async function executeAuthorizedAction(input: {
   }
   if (isFixtureActionType(intent.actionType)) {
     if (!input.allowFixture) throw new DigiAiError(403, "fixture_forbidden", "Fixture action execution is isolated from ordinary production callers.");
-  } else if (!isMybrandosReadActionType(intent.actionType)) {
+  } else if (!isMybrandosGovernedActionType(intent.actionType)) {
     throw new DigiAiError(409, "EXECUTOR_NOT_FOUND", "Real external executors are not enabled.");
   }
   validateActionParameters(intent.actionType, intent.actionClass, parameters);
@@ -385,7 +386,7 @@ async function syncStep(store: DigiAiStore, execution: DigiAiActionExecution, st
             executionId: execution.executionId,
             receiptId: receipt.receiptId,
             executed: true,
-            fixture: !isMybrandosReadActionType(execution.actionType),
+            fixture: !isMybrandosGovernedActionType(execution.actionType),
             retrieved: isMybrandosReadActionType(execution.actionType),
             reference: receipt.resultReference,
           },

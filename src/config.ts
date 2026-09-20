@@ -142,6 +142,7 @@ export function loadConfig() {
       : "STAGING") as "STAGING" | "PRODUCTION",
     mybrandosTimeoutMs: Number(env("MYBRANDOS_TIMEOUT_MS", "8000")),
     mybrandosAcceptanceSlug: env("MYBRANDOS_ACCEPTANCE_SLUG", "mrfundzman"),
+    mybrandosAcceptanceOwnerId: env("MYBRANDOS_ACCEPTANCE_OWNER_ID"),
   };
 }
 

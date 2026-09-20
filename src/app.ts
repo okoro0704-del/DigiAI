@@ -71,9 +71,9 @@ import {
   reconcileToolInvocation,
   rejectConnectorSpoof,
 } from "./connectors/service.js";
-import { ensureMybrandosPublicConnection } from "./connectors/mybrandos/bootstrap.js";
+import { ensureMybrandosDraftConnection, ensureMybrandosPublicConnection } from "./connectors/mybrandos/bootstrap.js";
 import { bindMybrandosReadClient } from "./connectors/mybrandos/runtime.js";
-import { runMybrandosPublicReadAcceptance } from "./connectors/mybrandos/acceptance.js";
+import { runMybrandosCreateDraftAcceptance, runMybrandosPublicReadAcceptance } from "./connectors/mybrandos/acceptance.js";
 import {
   advanceExecution,
   cancelExecution,
@@ -353,6 +353,7 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
   }).catch(() => undefined);
   app.addHook("onReady", async () => {
     await ensureMybrandosPublicConnection(store, config);
+    await ensureMybrandosDraftConnection(store, config);
   });
 
   app.get("/health", async (): Promise<HealthResponse> => buildHealthResponse(config, pool, store, deps.drive));
@@ -932,6 +933,40 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         caller: identity.caller,
         slug: typeof body.slug === "string" ? body.slug : config.mybrandosAcceptanceSlug,
         operation: body.operation === "listPublishedAssets" ? "listPublishedAssets" : "inspectPublicDigitalLife",
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/mybrandos/create-draft", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      rejectSpoofedAuth(req.headers, req.url);
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      rejectIdentitySpoof(body);
+      rejectConnectorSpoof(body);
+      if ("ownerId" in body || "tenantId" in body || "slug" in body || "published" in body || "scheduledAt" in body) {
+        throw new DigiAiError(400, "invalid_request", "Owner, slug, and publication fields are reserved to Digi AI.");
+      }
+      const caller = authenticateCaller(config, req.headers);
+      if (!caller) throw new DigiAiError(401, "unauthenticated", "Operator authentication is required.");
+      if (!isOperatorCaller(config, caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for the mybrandOS create-draft probe.");
+      }
+      const token = headerValue(req.headers.authorization).toLowerCase().startsWith("bearer ")
+        || headerValue(req.headers["x-trustid-session"]);
+      const identity = token
+        ? await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver })
+        : { caller, actor: { trustId: `svc:${caller.id}`, displayName: "platform-operator" } };
+      const title = typeof body.title === "string" && body.title.trim()
+        ? body.title.trim().slice(0, 200)
+        : `Digiconomy governed draft acceptance — ${new Date().toISOString()}`;
+      const result = await runMybrandosCreateDraftAcceptance({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        title,
       });
       return reply.send({ ok: true, service: "digi-ai", ...result });
     } catch (err) {

@@ -233,6 +233,71 @@ export const fixtureValue = makeFixture("fixture-value", "SPEND_FIXTURE", "SPEND
 export const fixtureDeployer = makeFixture("fixture-deployer", "DEPLOY_FIXTURE", "DEPLOY", "deployment");
 export const fixtureDelete = makeFixture("fixture-delete", "DELETE_FIXTURE", "DELETE", "deletion");
 
+export const mybrandosDraftWriter: DigiAiActionExecutor = {
+  executorId: "mybrandos-draft-writer",
+  version: "3h-create-1",
+  supportedActionTypes: ["CREATE_MYBRANDOS_DRAFT"],
+  supportedActionClasses: ["CREATE"],
+  capabilities: ["NATIVE_IDEMPOTENCY"],
+  async execute(context) {
+    if (!context.store || !context.actor || !context.caller || !context.execution) {
+      return { outcome: "REJECTED_BEFORE_SUBMISSION", submitted: false, invoked: false, failureCode: "EXECUTOR_REJECTED" };
+    }
+    const result = await invokeTool({
+      store: context.store,
+      execution: context.execution,
+      actor: context.actor,
+      caller: context.caller,
+      selectionId: context.execution.connectionSelectionId,
+    });
+    return mapToolToExecutor(result);
+  },
+  async resume(context) {
+    if (!context.store || !context.actor || !context.caller || !context.execution) {
+      return { outcome: "REJECTED_BEFORE_SUBMISSION", submitted: false, invoked: false, failureCode: "EXECUTOR_REJECTED" };
+    }
+    const result = await invokeTool({
+      store: context.store,
+      execution: context.execution,
+      actor: context.actor,
+      caller: context.caller,
+      reconcile: true,
+      selectionId: context.execution.connectionSelectionId,
+    });
+    return mapToolToExecutor(result);
+  },
+  async inspect(context) {
+    if (context.existingExternalReference) {
+      return {
+        outcome: "SUCCEEDED",
+        submitted: true,
+        invoked: false,
+        externalReference: context.existingExternalReference,
+        resultReference: context.execution?.resultReference,
+        evidence: { inspected: context.existingExternalReference, system: "mybrandos" },
+      };
+    }
+    return { outcome: "UNKNOWN_OUTCOME", submitted: false, invoked: false, failureCode: "UNKNOWN_REMOTE_OUTCOME" };
+  },
+  async reconcile(context) {
+    if (!context.store || !context.actor || !context.caller || !context.execution) {
+      return { outcome: "UNKNOWN_OUTCOME", submitted: false, invoked: false, failureCode: "UNKNOWN_REMOTE_OUTCOME" };
+    }
+    const result = await invokeTool({
+      store: context.store,
+      execution: context.execution,
+      actor: context.actor,
+      caller: context.caller,
+      reconcile: true,
+      selectionId: context.execution.connectionSelectionId,
+    });
+    return mapToolToExecutor(result);
+  },
+  async cancel() {
+    return { outcome: "FAILED", submitted: false, invoked: false, failureCode: "EXECUTOR_REJECTED" };
+  },
+};
+
 export const mybrandosPublicReader: DigiAiActionExecutor = {
   executorId: "mybrandos-public-reader",
   version: "3g-read-1",

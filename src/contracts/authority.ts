@@ -29,6 +29,7 @@ export const ACTION_TYPES = [
   "DELETE_FIXTURE",
   "INSPECT_MYBRANDOS_PUBLIC",
   "LIST_MYBRANDOS_PUBLIC_ASSETS",
+  "CREATE_MYBRANDOS_DRAFT",
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 

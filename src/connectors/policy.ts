@@ -28,14 +28,16 @@ export function assertOperationAllowed(input: {
   sideEffectClass: SideEffectClass;
   environment: ConnectorEnvironment;
   live?: boolean;
+  operationId?: string;
 }) {
   const policy = loadToolConnectorPolicy();
+  const createDraft = input.operationId === "mybrandos.createDraft" && input.sideEffectClass === "REVERSIBLE_WRITE";
   if (input.live || input.environment === "PRODUCTION") {
-    if (input.sideEffectClass === "CONSEQUENTIAL_WRITE" || input.sideEffectClass === "DESTRUCTIVE" || input.sideEffectClass === "REVERSIBLE_WRITE") {
+    if (!createDraft && (input.sideEffectClass === "CONSEQUENTIAL_WRITE" || input.sideEffectClass === "DESTRUCTIVE" || input.sideEffectClass === "REVERSIBLE_WRITE")) {
       throw new DigiAiError(403, "ENVIRONMENT_DENIED", "Real consequential connector writes are disabled.");
     }
   }
-  if (!policy.realConsequentialWrites && input.environment === "PRODUCTION" && input.sideEffectClass !== "READ_ONLY") {
+  if (!createDraft && !policy.realConsequentialWrites && input.environment === "PRODUCTION" && input.sideEffectClass !== "READ_ONLY") {
     throw new DigiAiError(403, "ENVIRONMENT_DENIED", "Production mutations are not enabled in Phase 3E.");
   }
   if (!policy.realDestructive && input.sideEffectClass === "DESTRUCTIVE" && input.environment === "PRODUCTION") {

@@ -17,6 +17,7 @@ import type {
 } from "../contracts/authority.js";
 import { AUTHORITY_POLICY_ID, AUTHORITY_POLICY_VERSION, isActionClass, isActionType } from "../contracts/authority.js";
 import { rejectConnectorSpoof } from "../connectors/service.js";
+import { draftPayloadDigest, resolveGovernedDraftSubject } from "../connectors/mybrandos/subject.js";
 import { clip, newId, nowIso } from "../lib/crypto.js";
 import { DigiAiError } from "../lib/http.js";
 import type { DigiAiStore } from "../store/types.js";
@@ -54,8 +55,9 @@ export async function proposeAction(input: {
     const objective = await ownedObjective(input.store, input.body.objectiveId, input.actor, input.caller);
     if (objective.cancelRequested) throw new DigiAiError(409, "cancelled", "A cancelled objective cannot propose actions.");
   }
-  const parameters = sanitizeParameters(input.body.parameters ?? {});
-  const target = { ...input.body.target, tenantId: input.actor.tenantId ?? input.body.target.tenantId };
+  const bound = bindGovernedDraft(input.body, input.actor, input.caller);
+  const parameters = sanitizeParameters(bound.parameters ?? {});
+  const target = { ...bound.target, tenantId: input.actor.tenantId ?? bound.target.tenantId };
   const digest = actionDigest({
     actionClass: strongestClass([input.body.actionClass, ...(input.body.additionalClasses ?? [])]),
     actionType: input.body.actionType,
@@ -455,6 +457,40 @@ function decisionSummary(intent: DigiAiActionIntent): string {
     return `Change ${intent.target.resourceType} ${intent.target.resourceId}.`;
   }
   return `Perform ${strongest} ${intent.actionType} on ${intent.target.resourceType} ${intent.target.resourceId}.`;
+}
+
+function bindGovernedDraft(
+  body: ProposeActionInput,
+  actor: ActorContext,
+  caller: CallerApplication,
+): ProposeActionInput {
+  if (body.actionType !== "CREATE_MYBRANDOS_DRAFT") return body;
+  if (body.actionClass !== "CREATE") {
+    throw new DigiAiError(403, "AUTHORITY_INVALID", "CREATE_MYBRANDOS_DRAFT requires the CREATE authority class.");
+  }
+  if (body.additionalClasses?.some((row) => row === "PUBLISH" || row === "DELETE" || row === "CHANGE")) {
+    throw new DigiAiError(403, "AUTHORITY_INVALID", "A CREATE plan cannot expand into PUBLISH or DELETE.");
+  }
+  const rawParams = body.parameters ?? {};
+  if (rawParams.visibility === "public" || rawParams.destination || rawParams.environment === "publish") {
+    throw new DigiAiError(400, "invalid_request", "Draft creation cannot include publication or destination fields.");
+  }
+  const title = clip(String(rawParams.contentReference ?? ""), 200);
+  if (!title) throw new DigiAiError(400, "invalid_request", "A draft title is required.");
+  const subject = resolveGovernedDraftSubject({
+    actor,
+    caller,
+    requestedOwnerId: body.target.resourceId,
+  });
+  return {
+    ...body,
+    actionClass: "CREATE",
+    target: { resourceType: "mybrandos.owner", resourceId: subject.ownerId, tenantId: actor.tenantId },
+    parameters: {
+      contentReference: title,
+      contentDigest: draftPayloadDigest(title),
+    },
+  };
 }
 
 function sanitizeParameters(raw: ActionParameters): ActionParameters {

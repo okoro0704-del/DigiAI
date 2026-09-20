@@ -195,6 +195,14 @@ export function buildHealthResponse(
       s2sOutbound: Boolean(config.mybrandosUrl),
       credentialRequired: true,
       realWritesEnabled: false,
+      authenticated: Boolean(config.mybrandosUrl),
+      readsEnabled: true,
+      createDraftEnabled: true,
+      realCreateDraftEnabled: true,
+      realPublishEnabled: false,
+      realDeleteEnabled: false,
+      publishEnabled: false,
+      deleteEnabled: false,
     },
   };
 }

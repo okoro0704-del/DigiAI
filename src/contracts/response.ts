@@ -238,5 +238,13 @@ export type HealthResponse = {
     s2sOutbound: boolean;
     credentialRequired: boolean;
     realWritesEnabled: false;
+    authenticated?: boolean;
+    readsEnabled?: boolean;
+    createDraftEnabled?: boolean;
+    realCreateDraftEnabled?: boolean;
+    realPublishEnabled?: false;
+    realDeleteEnabled?: false;
+    publishEnabled?: false;
+    deleteEnabled?: false;
   };
 };

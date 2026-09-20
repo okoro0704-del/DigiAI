@@ -21,7 +21,7 @@ import { orchestrationLimits } from "./limits.js";
 import { planObjective } from "./planner.js";
 import { strictestPrivacy } from "./privacy.js";
 import { invalidateObjectiveAuthorizations, proposeAction } from "../authority/service.js";
-import { isFixtureActionType, isMybrandosReadActionType } from "../contracts/execution.js";
+import { isFixtureActionType, isMybrandosGovernedActionType } from "../contracts/execution.js";
 import { executeAuthorizedAction, advanceExecution } from "../execution/service.js";
 import type { FixtureMode } from "../contracts/execution.js";
 import { readySteps, validatePlan } from "./validate.js";
@@ -417,7 +417,7 @@ async function executeGovernedAction(
   if (step.status === "WAITING_FOR_HUMAN" && !step.authorizationId) return;
   if (step.authorizationId) {
     const intent = step.actionIntentId ? await input.deps.store.getActionIntent(step.actionIntentId) : null;
-    if (intent && ((isFixtureActionType(intent.actionType) && input.allowFixture) || isMybrandosReadActionType(intent.actionType))) {
+    if (intent && ((isFixtureActionType(intent.actionType) && input.allowFixture) || isMybrandosGovernedActionType(intent.actionType))) {
       await executeAuthorizedAction({
         store: input.deps.store,
         actor: input.actor,
@@ -465,7 +465,7 @@ async function executeGovernedAction(
     },
   });
   if (proposed.authorization) {
-    if ((isFixtureActionType(proposed.intent.actionType) && input.allowFixture) || isMybrandosReadActionType(proposed.intent.actionType)) {
+    if ((isFixtureActionType(proposed.intent.actionType) && input.allowFixture) || isMybrandosGovernedActionType(proposed.intent.actionType)) {
       await input.deps.store.updateStep(step.stepId, {
         actionIntentId: proposed.intent.actionIntentId,
         authorizationId: proposed.authorization.authorizationId,

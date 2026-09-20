@@ -17,6 +17,7 @@ export function evaluateConnectionLifecycle(row: DigiAiExternalConnection, now: 
 }
 
 export function requiredScopesForOperation(operationId: string): string[] {
+  if (operationId === "mybrandos.createDraft") return ["mybrandos:draft:create"];
   if (operationId.startsWith("mybrandos.")) return ["mybrandos:read:published"];
   if (operationId === "fixture.secured" || operationId === "fixture.connected") return ["read:catalog"];
   if (operationId.endsWith("publish")) return ["write:publish"];

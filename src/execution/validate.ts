@@ -7,6 +7,7 @@ const REQUIRED: Record<string, Array<keyof ActionParameters>> = {
   SPEND_FIXTURE: ["amount", "currency"],
   DEPLOY_FIXTURE: ["artifact", "environment", "service"],
   DELETE_FIXTURE: ["resourceType", "resourceId"],
+  CREATE_MYBRANDOS_DRAFT: ["contentReference", "contentDigest"],
 };
 
 export function validateActionParameters(actionType: ActionType, actionClass: ActionClass, parameters: ActionParameters) {
