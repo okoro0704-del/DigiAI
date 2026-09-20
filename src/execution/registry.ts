@@ -1,6 +1,6 @@
 import type { ActionType } from "../contracts/authority.js";
 import { isFixtureActionType } from "../contracts/execution.js";
-import { fixtureDelete, fixtureDeployer, fixtureMessenger, fixturePublisher, fixtureValue, mybrandosDraftWriter, mybrandosPublicReader, type DigiAiActionExecutor } from "./executors.js";
+import { fixtureDelete, fixtureDeployer, fixtureMessenger, fixturePublisher, fixtureValue, mybrandosDraftPublisher, mybrandosDraftWriter, mybrandosPublicReader, type DigiAiActionExecutor } from "./executors.js";
 
 const REGISTRY: Record<string, DigiAiActionExecutor> = {
   PUBLISH_FIXTURE_POST: fixturePublisher,
@@ -11,6 +11,7 @@ const REGISTRY: Record<string, DigiAiActionExecutor> = {
   INSPECT_MYBRANDOS_PUBLIC: mybrandosPublicReader,
   LIST_MYBRANDOS_PUBLIC_ASSETS: mybrandosPublicReader,
   CREATE_MYBRANDOS_DRAFT: mybrandosDraftWriter,
+  PUBLISH_MYBRANDOS_DRAFT: mybrandosDraftPublisher,
 };
 
 export function resolveExecutor(actionType: ActionType): DigiAiActionExecutor | undefined {

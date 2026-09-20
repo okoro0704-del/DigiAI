@@ -53,6 +53,15 @@ export function evaluateAuthority(input: {
     return { ...base, outcome: "AUTHORIZED_AUTOMATICALLY", reasonCode: "AUTO_CLASS_ALLOWED", explanation: `${strongest} may execute automatically when access is already authorized.` };
   }
 
+  if (input.intent.actionType === "PUBLISH_MYBRANDOS_DRAFT") {
+    return {
+      ...base,
+      outcome: "HUMAN_DECISION_REQUIRED",
+      reasonCode: "ACTION_REQUIRES_HUMAN",
+      explanation: "PUBLISH_MYBRANDOS_DRAFT requires explicit human approval of the exact publication intent.",
+    };
+  }
+
   const grantResult = matchingGrant(input.intent, input.grants, now);
   if (grantResult.kind === "authorized") {
     return {

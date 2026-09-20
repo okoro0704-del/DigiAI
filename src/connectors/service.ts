@@ -15,9 +15,9 @@ import { resolveEligibleConnection, resolveSecretForConnection } from "../connec
 import { resolveCredential } from "./credentials.js";
 import { toolRequestDigest, toolResponseDigest } from "./digest.js";
 import { runFixtureConnector } from "./fixtures.js";
-import { runMybrandosConnector, runMybrandosCreateDraft } from "./mybrandos/runtime.js";
+import { runMybrandosConnector, runMybrandosCreateDraft, runMybrandosPublishDraft } from "./mybrandos/runtime.js";
 import { requireSlug } from "../lib/slug.js";
-import { isMybrandosGovernedActionType, isMybrandosWriteActionType } from "../contracts/execution.js";
+import { isMybrandosGovernedActionType, isMybrandosPublishActionType, isMybrandosWriteActionType } from "../contracts/execution.js";
 import { assertNotArbitraryNetwork } from "./network.js";
 import { assertOperationAllowed } from "./policy.js";
 import { getConnector, getOperation, resolveByActionType, sanitizedCatalog } from "./registry.js";
@@ -98,6 +98,9 @@ export async function invokeTool(input: {
   }
   if (resolved.connector.connectorId === "mybrandos" && resolved.operation.operationId === "mybrandos.createDraft") {
     minimized.title = String(execution.parameters.contentReference ?? "");
+  } else if (resolved.connector.connectorId === "mybrandos" && resolved.operation.operationId === "mybrandos.publishDraft") {
+    minimized.draftId = String(execution.target.resourceId ?? "");
+    minimized.contentDigest = String(execution.parameters.contentDigest ?? "");
   } else if (resolved.connector.connectorId === "mybrandos") {
     minimized.slug = requireSlug(execution.target.resourceId, "mybrandOS");
   }
@@ -142,7 +145,11 @@ export async function invokeTool(input: {
   } catch (err) {
     if (resolved.connector.connectorId === "mybrandos") {
       await audit(input.store, {
-        eventType: isMybrandosWriteActionType(execution.actionType) ? "DRAFT_CREATE_DENIED" : "MYBRANDOS_READ_DENIED",
+        eventType: isMybrandosPublishActionType(execution.actionType)
+          ? "PUBLISH_DENIED"
+          : isMybrandosWriteActionType(execution.actionType)
+            ? "DRAFT_CREATE_DENIED"
+            : "MYBRANDOS_READ_DENIED",
         toolInvocationId: "unbound",
         connectorId: resolved.connector.connectorId,
         operationId: resolved.operation.operationId,
@@ -180,9 +187,9 @@ export async function invokeTool(input: {
   await audit(input.store, { eventType: "TOOL_INVOCATION_REQUESTED", toolInvocationId: claimed.invocation.toolInvocationId, executionId: execution.executionId, actorId: execution.actorId, tenantId: execution.tenantId });
   await audit(input.store, { eventType: "CONNECTOR_RESOLVED", toolInvocationId: claimed.invocation.toolInvocationId, connectorId: resolved.connector.connectorId, operationId: resolved.operation.operationId });
   if (resolved.connector.connectorId === "mybrandos") {
-    const write = resolved.operation.operationId === "mybrandos.createDraft";
-    await audit(input.store, { eventType: write ? "DRAFT_CREATE_REQUESTED" : "MYBRANDOS_READ_REQUESTED", toolInvocationId: claimed.invocation.toolInvocationId, connectorId: resolved.connector.connectorId, operationId: resolved.operation.operationId, executionId: execution.executionId, actorId: execution.actorId, tenantId: execution.tenantId });
-    await audit(input.store, { eventType: write ? "DRAFT_CREATE_AUTHORIZED" : "MYBRANDOS_READ_AUTHORIZED", toolInvocationId: claimed.invocation.toolInvocationId, connectorId: resolved.connector.connectorId, operationId: resolved.operation.operationId });
+    const kind = mybrandosKind(resolved.operation.operationId);
+    await audit(input.store, { eventType: kind === "publish" ? "PUBLISH_REQUESTED" : kind === "create" ? "DRAFT_CREATE_REQUESTED" : "MYBRANDOS_READ_REQUESTED", toolInvocationId: claimed.invocation.toolInvocationId, connectorId: resolved.connector.connectorId, operationId: resolved.operation.operationId, executionId: execution.executionId, actorId: execution.actorId, tenantId: execution.tenantId });
+    await audit(input.store, { eventType: kind === "publish" ? "PUBLISH_AUTHORIZED" : kind === "create" ? "DRAFT_CREATE_AUTHORIZED" : "MYBRANDOS_READ_AUTHORIZED", toolInvocationId: claimed.invocation.toolInvocationId, connectorId: resolved.connector.connectorId, operationId: resolved.operation.operationId });
   }
   if (!resolved.operation.requiresCredential) {
     await audit(input.store, { eventType: "CREDENTIAL_RESOLVED", toolInvocationId: claimed.invocation.toolInvocationId, connectorId: resolved.connector.connectorId });
@@ -231,7 +238,7 @@ export function evaluateConnectorGate(input: {
   if (connector.status === "DISABLED") throw new DigiAiError(409, "CONNECTOR_DISABLED", "The connector is disabled.");
   if (!operation.enabled) throw new DigiAiError(409, "OPERATION_DISABLED", "The connector operation is disabled.");
   assertOperationAllowed({ sideEffectClass: operation.sideEffectClass, environment: input.environment ?? connector.environment, operationId: operation.operationId });
-  if ((input.environment === "PRODUCTION" && connector.environment !== "PRODUCTION") || (input.environment === "PRODUCTION" && operation.sideEffectClass !== "READ_ONLY" && operation.operationId !== "mybrandos.createDraft")) {
+  if ((input.environment === "PRODUCTION" && connector.environment !== "PRODUCTION") || (input.environment === "PRODUCTION" && operation.sideEffectClass !== "READ_ONLY" && operation.operationId !== "mybrandos.createDraft" && operation.operationId !== "mybrandos.publishDraft")) {
     throw new DigiAiError(403, "ENVIRONMENT_DENIED", "A staging connector cannot be used for production.");
   }
   if (connector.connectorId !== "mybrandos") {
@@ -260,7 +267,7 @@ async function submit(
   await store.putToolInvocation(invocation);
   await audit(store, { eventType: "TOOL_SUBMISSION_STARTED", toolInvocationId: invocation.toolInvocationId, status: "SUBMITTING" });
   if (connector.connectorId === "mybrandos") {
-    await audit(store, { eventType: operation.operationId === "mybrandos.createDraft" ? "DRAFT_CREATE_SUBMITTED" : "MYBRANDOS_READ_SUBMITTED", toolInvocationId: invocation.toolInvocationId, connectorId: connector.connectorId, operationId: operation.operationId });
+    await audit(store, { eventType: operation.operationId === "mybrandos.publishDraft" ? "PUBLISH_SUBMITTED" : operation.operationId === "mybrandos.createDraft" ? "DRAFT_CREATE_SUBMITTED" : "MYBRANDOS_READ_SUBMITTED", toolInvocationId: invocation.toolInvocationId, connectorId: connector.connectorId, operationId: operation.operationId });
   }
   const started = Date.now();
   let serviceSecret: string | undefined;
@@ -280,7 +287,18 @@ async function submit(
     throw new DigiAiError(409, "CREDENTIAL_UNAVAILABLE", "mybrandOS S2S operations require a resolved platform credential.");
   }
   const result = connector.connectorId === "mybrandos"
-    ? operation.operationId === "mybrandos.createDraft"
+    ? operation.operationId === "mybrandos.publishDraft"
+      ? await runMybrandosPublishDraft({
+          operation,
+          serviceSecret,
+          ownerId: String(execution.parameters.resourceId ?? ""),
+          draftId: String(execution.target.resourceId ?? ""),
+          idempotencyKey: invocation.idempotencyKey || execution.externalIdempotencyKey || execution.executionId,
+          payloadDigest: String(execution.parameters.contentDigest ?? ""),
+          authorizationId: execution.authorizationId,
+          reconcile: opts.reconcile,
+        })
+    : operation.operationId === "mybrandos.createDraft"
       ? await runMybrandosCreateDraft({
           operation,
           serviceSecret,
@@ -352,9 +370,15 @@ async function submit(
     status: result.status,
   });
   if (connector.connectorId === "mybrandos") {
-    const write = operation.operationId === "mybrandos.createDraft";
+    const kind = mybrandosKind(operation.operationId);
     await audit(store, {
-      eventType: write
+      eventType: kind === "publish"
+        ? result.status === "SUCCEEDED"
+          ? "PUBLISH_SUCCEEDED"
+          : result.status === "UNKNOWN_OUTCOME"
+            ? "PUBLISH_UNKNOWN"
+            : "PUBLISH_FAILED"
+        : kind === "create"
         ? result.status === "SUCCEEDED"
           ? "DRAFT_CREATE_SUCCEEDED"
           : result.status === "UNKNOWN_OUTCOME"
@@ -371,6 +395,12 @@ async function submit(
   }
   if (result.submitted) await audit(store, { eventType: "TOOL_SUBMITTED", toolInvocationId: invocation.toolInvocationId });
   return toResult(invocation);
+}
+
+function mybrandosKind(operationId: string): "publish" | "create" | "read" {
+  if (operationId === "mybrandos.publishDraft") return "publish";
+  if (operationId === "mybrandos.createDraft") return "create";
+  return "read";
 }
 
 function toResult(row: DigiAiToolInvocation): DigiAiToolInvocationResult {

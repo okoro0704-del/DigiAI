@@ -5,9 +5,11 @@ export const MYBRANDOS_S2S_AUTHENTICATION = "BEARER_SHARED_SECRET" as const;
 export const MYBRANDOS_PUBLIC_READ_SCOPE = "read:public";
 export const MYBRANDOS_S2S_READ_SCOPE = "mybrandos:read:published";
 export const MYBRANDOS_S2S_DRAFT_SCOPE = "mybrandos:draft:create";
+export const MYBRANDOS_S2S_PUBLISH_SCOPE = "mybrandos:draft:publish";
 export const MYBRANDOS_S2S_TEST_SENTINEL = "TEST_MYBRANDOS_S2S_SECRET_DO_NOT_LEAK";
 export const MYBRANDOS_CONNECTION_ID = "conn_mybrandos_platform_public";
 export const MYBRANDOS_DRAFT_CONNECTION_ID = "conn_mybrandos_platform_draft";
+export const MYBRANDOS_PUBLISH_CONNECTION_ID = "conn_mybrandos_platform_publish";
 export const MYBRANDOS_CREDENTIAL_REF = "cred_mybrandos_s2s";
 export const MYBRANDOS_LOGICAL_NAME = "MYBRANDOS_S2S";
 export const MYBRANDOS_RAILWAY_ENV_NAME = "DIGI_AI_CONN_MYBRANDOS_S2S";
@@ -44,7 +46,10 @@ export type MybrandosReadFailureCode =
   | "SUBJECT_MISMATCH"
   | "SCOPE_INSUFFICIENT"
   | "INVALID_DRAFT_INPUT"
-  | "IDEMPOTENCY_CONFLICT";
+  | "IDEMPOTENCY_CONFLICT"
+  | "APPROVED_CONTENT_CHANGED"
+  | "DRAFT_NOT_PUBLISHABLE"
+  | "AUTHORIZATION_REQUIRED";
 
 export const MYBRANDOS_ALLOWED_HTTP_METHODS = ["GET"] as const;
 export const MYBRANDOS_WRITE_HTTP_METHODS = ["POST"] as const;
@@ -73,5 +78,13 @@ export const MYBRANDOS_REGISTERED_OPERATIONS = [
     requiredScopes: [MYBRANDOS_S2S_DRAFT_SCOPE],
     sideEffectClass: "REVERSIBLE_WRITE",
     domainInterface: "POST /api/internal/drafts",
+  },
+  {
+    operationId: "mybrandos.publishDraft",
+    visibilityClass: "PUBLIC" as MybrandosVisibilityClass,
+    requiredIdentity: "service-principal+subject+human-authorization",
+    requiredScopes: [MYBRANDOS_S2S_PUBLISH_SCOPE],
+    sideEffectClass: "CONSEQUENTIAL_WRITE",
+    domainInterface: "POST /api/internal/drafts/:draftId/publish",
   },
 ] as const;

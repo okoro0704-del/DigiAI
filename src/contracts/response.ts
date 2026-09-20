@@ -234,7 +234,7 @@ export type HealthResponse = {
   };
   mybrandosConnector?: {
     configured: boolean;
-    mode: "read-only";
+    mode: "read-only" | "read-create-publish";
     s2sOutbound: boolean;
     credentialRequired: boolean;
     realWritesEnabled: false;
@@ -242,9 +242,9 @@ export type HealthResponse = {
     readsEnabled?: boolean;
     createDraftEnabled?: boolean;
     realCreateDraftEnabled?: boolean;
-    realPublishEnabled?: false;
+    realPublishEnabled?: boolean;
     realDeleteEnabled?: false;
-    publishEnabled?: false;
+    publishEnabled?: boolean;
     deleteEnabled?: false;
   };
 };

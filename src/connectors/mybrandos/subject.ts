@@ -17,6 +17,28 @@ export type DraftSubjectAttestation = {
   mac: string;
 };
 
+export type PublishSubjectAttestation = {
+  ownerId: string;
+  draftId: string;
+  exp: number;
+  idempotencyKey: string;
+  payloadDigest: string;
+  authorizationId: string;
+  mac: string;
+};
+
+export type CanonicalPublishMaterial = {
+  draftId: string;
+  ownerId: string;
+  title: string;
+  description: string;
+  writingBody: string;
+  assetType: string;
+  dataZoneId: string;
+  intendedState: "PUBLISHED";
+  intendedVisibility: "public";
+};
+
 const OWNER_RE = /^TD-[A-Z0-9-]+$/;
 
 export function acceptanceOwnerId(): string {
@@ -47,6 +69,30 @@ export function draftPayloadDigest(title: string, description = ""): string {
 
 export function signDraftSubject(secret: string, input: Omit<DraftSubjectAttestation, "mac">): DraftSubjectAttestation {
   const material = `v1|digi-ai|createDraft|${input.ownerId}|${input.idempotencyKey}|${input.exp}|${input.payloadDigest}`;
+  return {
+    ...input,
+    mac: createHmac("sha256", secret).update(material).digest("hex"),
+  };
+}
+
+export function publishPayloadDigest(material: CanonicalPublishMaterial): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      assetType: material.assetType,
+      dataZoneId: material.dataZoneId,
+      description: material.description,
+      draftId: material.draftId,
+      intendedState: material.intendedState,
+      intendedVisibility: material.intendedVisibility,
+      ownerId: material.ownerId,
+      title: material.title,
+      writingBody: material.writingBody,
+    }))
+    .digest("hex");
+}
+
+export function signPublishSubject(secret: string, input: Omit<PublishSubjectAttestation, "mac">): PublishSubjectAttestation {
+  const material = `v1|digi-ai|publishDraft|${input.ownerId}|${input.draftId}|${input.idempotencyKey}|${input.exp}|${input.payloadDigest}|${input.authorizationId}`;
   return {
     ...input,
     mac: createHmac("sha256", secret).update(material).digest("hex"),

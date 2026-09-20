@@ -153,7 +153,8 @@ test("3G registry, read-only operations, no arbitrary fetch, S2S bearer required
   expect(getOperation("mybrandos.publish")).toBeUndefined();
   expect(getOperation("mybrandos.deleteAsset")).toBeUndefined();
   expect(getOperation("mybrandos.createDraft")?.sideEffectClass).toBe("REVERSIBLE_WRITE");
-  expect(registeredOperations().filter((row) => row.connectorId === "mybrandos" && row.operationId !== "mybrandos.createDraft").every((row) => row.sideEffectClass === "READ_ONLY")).toBe(true);
+  expect(registeredOperations().filter((row) => row.connectorId === "mybrandos" && row.operationId !== "mybrandos.createDraft" && row.operationId !== "mybrandos.publishDraft").every((row) => row.sideEffectClass === "READ_ONLY")).toBe(true);
+  expect(getOperation("mybrandos.publishDraft")?.sideEffectClass).toBe("CONSEQUENTIAL_WRITE");
   expect(MYBRANDOS_REGISTERED_OPERATIONS.filter((row) => row.operationId !== "mybrandos.createDraft").every((row) => row.visibilityClass === "PUBLIC")).toBe(true);
   expect(sanitizedCatalog().some((row) => row.operationId === "mybrandos.inspectPublicDigitalLife")).toBe(true);
   expect(sanitizedCatalog().every((row) => !("credentialRef" in row) && !("url" in row))).toBe(true);
@@ -386,7 +387,7 @@ test("prompt injection remains data, revoked connection denied, health sanitized
 
   const health = await live.app.inject({ method: "GET", url: "/health" });
   expect(health.json().mybrandosConnector.configured).toBe(true);
-  expect(health.json().mybrandosConnector.mode).toBe("read-only");
+  expect(health.json().mybrandosConnector.mode).toBe("read-create-publish");
   expect(health.json().mybrandosConnector.realWritesEnabled).toBe(false);
   expect(health.json().mybrandosConnector.s2sOutbound).toBe(true);
   expect(health.json().mybrandosConnector.credentialRequired).toBe(true);

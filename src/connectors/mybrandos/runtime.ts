@@ -2,7 +2,7 @@ import type { ConnectorCallResult } from "../fixtures.js";
 import type { DigiAiToolOperation } from "../../contracts/connectors.js";
 import { toolResponseDigest } from "../digest.js";
 import { requestMybrandosAuthenticated, type MybrandosClientConfig } from "./client.js";
-import { reconcileMybrandosDraft, requestMybrandosCreateDraft } from "./write-client.js";
+import { reconcileMybrandosDraft, reconcileMybrandosPublish, requestMybrandosCreateDraft, requestMybrandosPublishDraft } from "./write-client.js";
 
 export const mybrandosReadStats = {
   submissions: 0,
@@ -28,6 +28,14 @@ let writeOverride: ((input: {
   idempotencyKey: string;
   payloadDigest: string;
 }) => Promise<import("./write-client.js").MybrandosWriteResult>) | undefined;
+let publishOverride: ((input: {
+  reconcile?: boolean;
+  ownerId: string;
+  draftId: string;
+  idempotencyKey: string;
+  payloadDigest: string;
+  authorizationId: string;
+}) => Promise<import("./write-client.js").MybrandosPublishResult>) | undefined;
 let boundConfig: MybrandosClientConfig | undefined;
 
 export function bindMybrandosReadClient(input: {
@@ -45,10 +53,16 @@ export function bindMybrandosWriteClient(input: { write?: typeof writeOverride; 
   writeOverride = input.write;
 }
 
+export function bindMybrandosPublishClient(input: { publish?: typeof publishOverride; config?: MybrandosClientConfig }) {
+  if (input.config) boundConfig = input.config;
+  publishOverride = input.publish;
+}
+
 export function resetMybrandosReadClient() {
   boundConfig = undefined;
   override = undefined;
   writeOverride = undefined;
+  publishOverride = undefined;
 }
 
 export function mybrandosClientConfig(): MybrandosClientConfig | undefined {
@@ -205,6 +219,127 @@ export async function runMybrandosCreateDraft(input: {
       published: "false",
       scheduled: "false",
       distributed: "false",
+      s2sAuthenticated: "true",
+      authenticationMode: "S2S_SECRET",
+      responseDigest: toolResponseDigest(output),
+    },
+    output,
+  };
+}
+
+export async function runMybrandosPublishDraft(input: {
+  operation: DigiAiToolOperation;
+  serviceSecret?: string;
+  config?: MybrandosClientConfig;
+  ownerId: string;
+  draftId: string;
+  idempotencyKey: string;
+  payloadDigest: string;
+  authorizationId: string;
+  reconcile?: boolean;
+}): Promise<ConnectorCallResult> {
+  const config = input.config ?? boundConfig;
+  const request = async () => {
+    if (publishOverride) {
+      return publishOverride({
+        reconcile: input.reconcile,
+        ownerId: input.ownerId,
+        draftId: input.draftId,
+        idempotencyKey: input.idempotencyKey,
+        payloadDigest: input.payloadDigest,
+        authorizationId: input.authorizationId,
+      });
+    }
+    if (!input.serviceSecret) {
+      return { ok: false as const, status: 401, code: "MYBRANDOS_AUTH_FAILED" as const, attempts: 1 as const, submitted: false };
+    }
+    if (!config?.baseUrl) {
+      return { ok: false as const, status: 0, code: "MYBRANDOS_UNAVAILABLE" as const, attempts: 1 as const, submitted: false };
+    }
+    return input.reconcile
+      ? reconcileMybrandosPublish({
+          config,
+          serviceSecret: input.serviceSecret,
+          ownerId: input.ownerId,
+          draftId: input.draftId,
+          idempotencyKey: input.idempotencyKey,
+          payloadDigest: input.payloadDigest,
+          authorizationId: input.authorizationId,
+        })
+      : requestMybrandosPublishDraft({
+          config,
+          serviceSecret: input.serviceSecret,
+          ownerId: input.ownerId,
+          draftId: input.draftId,
+          idempotencyKey: input.idempotencyKey,
+          payloadDigest: input.payloadDigest,
+          authorizationId: input.authorizationId,
+        });
+  };
+  const result = await request();
+  if (!result.ok) {
+    if (result.code === "MYBRANDOS_TIMEOUT" || result.code === "MYBRANDOS_MALFORMED_RESPONSE") {
+      return {
+        status: "UNKNOWN_OUTCOME",
+        submitted: result.submitted,
+        failureCode: result.code === "MYBRANDOS_TIMEOUT" ? "TIMEOUT_UNKNOWN_SUBMISSION" : "MALFORMED_RESPONSE",
+        evidence: { system: "mybrandos", reasonCode: result.code, fallback: "denied" },
+      };
+    }
+    if (input.reconcile && result.code === "MYBRANDOS_NOT_FOUND") {
+      return {
+        status: "UNKNOWN_OUTCOME",
+        submitted: false,
+        failureCode: "TIMEOUT_UNKNOWN_SUBMISSION",
+        evidence: { system: "mybrandos", reasonCode: "NOT_FOUND", reconciled: "true" },
+      };
+    }
+    const failureCode =
+      result.code === "MYBRANDOS_AUTH_FAILED"
+        ? "AUTHENTICATION_ERROR"
+        : result.code === "MYBRANDOS_ACCESS_DENIED" || result.code === "SCOPE_INSUFFICIENT" || result.code === "AUTHORIZATION_REQUIRED"
+          ? "AUTHORIZATION_ERROR"
+          : result.code === "APPROVED_CONTENT_CHANGED"
+            ? "PARAMETER_MISMATCH"
+            : result.code === "IDEMPOTENCY_CONFLICT"
+              ? "PARAMETER_MISMATCH"
+              : result.code === "INVALID_DRAFT_INPUT" || result.code === "DRAFT_NOT_PUBLISHABLE"
+                ? "VALIDATION_ERROR"
+                : result.code === "MYBRANDOS_UNAVAILABLE"
+                  ? "TEMPORARY_UNAVAILABLE"
+                  : "PROVIDER_REJECTED";
+    return {
+      status: "FAILED",
+      submitted: result.submitted,
+      failureCode,
+      evidence: { system: "mybrandos", reasonCode: result.code, httpStatus: String(result.status), fallback: "denied" },
+    };
+  }
+  const output = result.body as unknown as Record<string, unknown>;
+  return {
+    status: "SUCCEEDED",
+    submitted: true,
+    externalOperationRef: `mybrandos:publish:${result.body.draftId}`,
+    resultReference: `mybrandos:publish:${result.body.publicationRef}:${result.body.state}`,
+    evidence: {
+      system: "mybrandos",
+      operation: "publishDraft",
+      authorityClass: "PUBLISH",
+      draftId: result.body.draftId,
+      publicationRef: result.body.publicationRef,
+      state: result.body.state,
+      visibility: result.body.visibility,
+      ownerRef: result.body.ownerRef,
+      publishedAt: result.body.publishedAt,
+      approvedContentDigest: result.body.approvedContentDigest,
+      publishedContentDigest: result.body.publishedContentDigest,
+      idempotencyKeyRef: result.body.idempotencyKeyRef,
+      publicPath: result.body.publicPath ?? "",
+      publicSlug: result.body.publicSlug ?? "",
+      privacyTransition: "PRIVATE→PUBLIC",
+      published: "true",
+      scheduled: "false",
+      canonicalService: "executePublish",
       s2sAuthenticated: "true",
       authenticationMode: "S2S_SECRET",
       responseDigest: toolResponseDigest(output),

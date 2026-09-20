@@ -164,6 +164,7 @@ export const FIXTURE_ACTION_TYPES: ActionType[] = [
 
 export const MYBRANDOS_READ_ACTION_TYPES: ActionType[] = ["INSPECT_MYBRANDOS_PUBLIC", "LIST_MYBRANDOS_PUBLIC_ASSETS"];
 export const MYBRANDOS_WRITE_ACTION_TYPES: ActionType[] = ["CREATE_MYBRANDOS_DRAFT"];
+export const MYBRANDOS_PUBLISH_ACTION_TYPES: ActionType[] = ["PUBLISH_MYBRANDOS_DRAFT"];
 
 export function isFixtureActionType(value: unknown): value is ActionType {
   return typeof value === "string" && (FIXTURE_ACTION_TYPES as string[]).includes(value);
@@ -177,8 +178,12 @@ export function isMybrandosWriteActionType(value: unknown): value is ActionType 
   return typeof value === "string" && (MYBRANDOS_WRITE_ACTION_TYPES as string[]).includes(value);
 }
 
+export function isMybrandosPublishActionType(value: unknown): value is ActionType {
+  return typeof value === "string" && (MYBRANDOS_PUBLISH_ACTION_TYPES as string[]).includes(value);
+}
+
 export function isMybrandosGovernedActionType(value: unknown): value is ActionType {
-  return isMybrandosReadActionType(value) || isMybrandosWriteActionType(value);
+  return isMybrandosReadActionType(value) || isMybrandosWriteActionType(value) || isMybrandosPublishActionType(value);
 }
 
 export function isFixtureMode(value: unknown): value is FixtureMode {

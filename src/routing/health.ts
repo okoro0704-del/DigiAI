@@ -191,7 +191,7 @@ export function buildHealthResponse(
     credentials: credentialHealth(),
     mybrandosConnector: {
       configured: Boolean(config.mybrandosUrl),
-      mode: "read-only",
+      mode: "read-create-publish",
       s2sOutbound: Boolean(config.mybrandosUrl),
       credentialRequired: true,
       realWritesEnabled: false,
@@ -199,9 +199,9 @@ export function buildHealthResponse(
       readsEnabled: true,
       createDraftEnabled: true,
       realCreateDraftEnabled: true,
-      realPublishEnabled: false,
+      realPublishEnabled: true,
       realDeleteEnabled: false,
-      publishEnabled: false,
+      publishEnabled: true,
       deleteEnabled: false,
     },
   };

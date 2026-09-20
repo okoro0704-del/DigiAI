@@ -322,7 +322,7 @@ test("health keeps broad writes false and create-draft explicit", async () => {
   const health = await live.app.inject({ url: "/health" });
   expect(health.json().mybrandosConnector.realWritesEnabled).toBe(false);
   expect(health.json().mybrandosConnector.createDraftEnabled).toBe(true);
-  expect(health.json().mybrandosConnector.realPublishEnabled).toBe(false);
-  expect(health.json().mybrandosConnector.publishEnabled).toBe(false);
+  expect(health.json().mybrandosConnector.realPublishEnabled).toBe(true);
+  expect(health.json().mybrandosConnector.publishEnabled).toBe(true);
   expect(health.json().mybrandosConnector.deleteEnabled).toBe(false);
 });

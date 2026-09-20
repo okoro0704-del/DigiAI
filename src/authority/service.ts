@@ -55,7 +55,7 @@ export async function proposeAction(input: {
     const objective = await ownedObjective(input.store, input.body.objectiveId, input.actor, input.caller);
     if (objective.cancelRequested) throw new DigiAiError(409, "cancelled", "A cancelled objective cannot propose actions.");
   }
-  const bound = bindGovernedDraft(input.body, input.actor, input.caller);
+  const bound = bindGovernedPublish(bindGovernedDraft(input.body, input.actor, input.caller), input.actor, input.caller);
   const parameters = sanitizeParameters(bound.parameters ?? {});
   const target = { ...bound.target, tenantId: input.actor.tenantId ?? bound.target.tenantId };
   const digest = actionDigest({
@@ -203,6 +203,13 @@ export async function decideAction(input: {
   if (currentDigest !== intent.parametersDigest) {
     throw new DigiAiError(409, "action_digest_changed", "The action changed after it was proposed. A new decision is required.");
   }
+  const expiresAt = publishApprovalExpiry(intent.actionType, now, input.expiresAt);
+  if (input.decision === "APPROVE" && intent.authorizationId) {
+    const existing = await input.store.getActionAuthorization(intent.authorizationId);
+    if (existing && existing.actionDigest === currentDigest && existing.status !== "invalidated" && (!existing.expiresAt || existing.expiresAt > now)) {
+      return { intent, decision: { decisionId: existing.authoritySourceId ?? existing.authorizationId, actionIntentId: intent.actionIntentId, actorId: intent.actorId, tenantId: intent.tenantId, decision: "APPROVE", scope: "THIS_ACTION", actionDigest: currentDigest, expiresAt: existing.expiresAt, createdAt: existing.issuedAt }, authorization: existing };
+    }
+  }
   const row: DigiAiHumanDecision = {
     decisionId: newId("adec"),
     actionIntentId: intent.actionIntentId,
@@ -211,7 +218,7 @@ export async function decideAction(input: {
     decision: input.decision,
     scope: input.scope ?? "THIS_ACTION",
     actionDigest: currentDigest,
-    expiresAt: input.expiresAt,
+    expiresAt,
     createdAt: now,
   };
   await input.store.putHumanDecision(row);
@@ -251,7 +258,7 @@ export async function decideAction(input: {
     source: "human_decision",
     sourceId: row.decisionId,
     now,
-    expiresAt: input.expiresAt,
+    expiresAt,
   });
   return { intent, decision: row, authorization: issued };
 }
@@ -324,7 +331,12 @@ export async function inspectAction(input: { store: DigiAiStore; actor: ActorCon
   const intent = await ownedIntent(input.store, input.actionIntentId, input.actor, input.caller);
   const authorization = intent.authorizationId ? await input.store.getActionAuthorization(intent.authorizationId) : null;
   const request = intent.decisionRequestId ? await input.store.getDecisionRequest(intent.decisionRequestId) : null;
-  return { intent: sanitizeIntent(intent), authorization: authorization ? sanitizeAuthorization(authorization) : null, decisionRequest: request };
+  return {
+    intent: sanitizeIntent(intent),
+    authorization: authorization ? sanitizeAuthorization(authorization) : null,
+    decisionRequest: request,
+    ceremony: publishCeremony(intent),
+  };
 }
 
 export async function inspectGrant(input: { store: DigiAiStore; actor: ActorContext; caller: CallerApplication; grantId: string }) {
@@ -429,6 +441,7 @@ async function createDecisionRequest(store: DigiAiStore, intent: DigiAiActionInt
     targetSummary: `${intent.target.resourceType}:${intent.target.resourceId}`,
     materialParameters: publicParameters(strongest, intent.parameters),
     reasonCode: reason ?? "ACTION_REQUIRES_HUMAN",
+    expiresAt: publishApprovalExpiry(intent.actionType, nowIso()),
     createdAt: nowIso(),
   };
   await store.putDecisionRequest(request);
@@ -436,8 +449,38 @@ async function createDecisionRequest(store: DigiAiStore, intent: DigiAiActionInt
   return request;
 }
 
+export const PUBLISH_AUTHORIZATION_TTL_MS = 15 * 60 * 1000;
+
+function publishApprovalExpiry(actionType: ActionType, now: string, requested?: string): string | undefined {
+  if (actionType !== "PUBLISH_MYBRANDOS_DRAFT") return requested;
+  const max = new Date(Date.parse(now) + PUBLISH_AUTHORIZATION_TTL_MS).toISOString();
+  if (!requested) return max;
+  return requested < max ? requested : max;
+}
+
+function publishCeremony(intent: DigiAiActionIntent) {
+  if (intent.actionType !== "PUBLISH_MYBRANDOS_DRAFT") return undefined;
+  return {
+    what: "Publish draft",
+    where: "mybrandOS",
+    which: intent.target.resourceId,
+    who: intent.parameters.resourceId ?? intent.parameters.contentReference,
+    consequence: "PRIVATE → PUBLIC. The approved draft becomes publicly visible on Digital Space.",
+    content: intent.parameters.contentReference ?? "",
+    contentDigest: intent.parameters.contentDigest ?? "",
+    intendedState: "PUBLISHED",
+    intendedVisibility: "public",
+    distribution: "Canonical mybrandOS publish may record a LifeOS DistributionIntent for the same public Asset. No schedule, delete, message, spend, or deploy.",
+    approvalRequired: true,
+    inferredFromLogin: false,
+  };
+}
+
 function decisionSummary(intent: DigiAiActionIntent): string {
   const strongest = strongestClass([intent.actionClass, ...(intent.additionalClasses ?? [])]);
+  if (intent.actionType === "PUBLISH_MYBRANDOS_DRAFT") {
+    return `PUBLISH draft ${intent.target.resourceId} to mybrandOS. Owner ${intent.parameters.resourceId ?? "acceptance subject"}. Privacy transition: PRIVATE → PUBLIC. Consequence: becomes publicly visible. Content: ${intent.parameters.contentReference ?? "approved draft"}. Canonical LifeOS may record a public DistributionIntent. Immediate publication only.`;
+  }
   if (strongest === "PUBLISH") {
     return `Publish ${intent.parameters.contentReference ?? "content"} to ${intent.parameters.destination ?? intent.target.resourceId} as ${intent.parameters.visibility ?? "specified visibility"}.`;
   }
@@ -457,6 +500,61 @@ function decisionSummary(intent: DigiAiActionIntent): string {
     return `Change ${intent.target.resourceType} ${intent.target.resourceId}.`;
   }
   return `Perform ${strongest} ${intent.actionType} on ${intent.target.resourceType} ${intent.target.resourceId}.`;
+}
+
+function bindGovernedPublish(
+  body: ProposeActionInput,
+  actor: ActorContext,
+  caller: CallerApplication,
+): ProposeActionInput {
+  if (body.actionType !== "PUBLISH_MYBRANDOS_DRAFT") return body;
+  if (body.actionClass !== "PUBLISH") {
+    throw new DigiAiError(403, "AUTHORITY_INVALID", "PUBLISH_MYBRANDOS_DRAFT requires the PUBLISH authority class.");
+  }
+  if (body.additionalClasses?.some((row) => row === "CREATE" || row === "DELETE" || row === "MESSAGE" || row === "SPEND" || row === "DEPLOY")) {
+    throw new DigiAiError(403, "AUTHORITY_INVALID", "A PUBLISH plan cannot expand into CREATE, DELETE, MESSAGE, SPEND, or DEPLOY.");
+  }
+  const rawParams = body.parameters ?? {};
+  const draftId = clip(String(body.target.resourceId ?? rawParams.resourceId ?? ""), 80);
+  if (!draftId || draftId.toLowerCase() === "mrfundzman" || !/^[a-z0-9:_-]+$/i.test(draftId)) {
+    throw new DigiAiError(400, "invalid_request", "An exact draftId is required.");
+  }
+  const digest = String(rawParams.contentDigest ?? "").trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw new DigiAiError(400, "invalid_request", "An exact approved content digest is required.");
+  }
+  if (rawParams.visibility && rawParams.visibility !== "public") {
+    throw new DigiAiError(400, "invalid_request", "Governed publish is immediate public publication only.");
+  }
+  if (rawParams.destination && rawParams.destination !== "mybrandos") {
+    throw new DigiAiError(400, "invalid_request", "Governed publish can only target mybrandOS.");
+  }
+  const title = clip(String(rawParams.contentReference ?? draftId), 200);
+  const liveEnvironment = (process.env.MYBRANDOS_ENVIRONMENT || (process.env.NODE_ENV === "production" ? "PRODUCTION" : "STAGING")).toUpperCase() === "PRODUCTION"
+    ? "PRODUCTION"
+    : "STAGING";
+  if (rawParams.environment && rawParams.environment !== liveEnvironment) {
+    throw new DigiAiError(403, "ENVIRONMENT_DENIED", "Publish authorization is bound to the live mybrandOS environment.");
+  }
+  const subject = resolveGovernedDraftSubject({
+    actor,
+    caller,
+    requestedOwnerId: typeof rawParams.resourceId === "string" && rawParams.resourceId !== draftId ? rawParams.resourceId : undefined,
+  });
+  return {
+    ...body,
+    actionClass: "PUBLISH",
+    target: { resourceType: "mybrandos.draft", resourceId: draftId, tenantId: actor.tenantId },
+    parameters: {
+      contentReference: title,
+      contentDigest: digest,
+      destination: "mybrandos",
+      visibility: "public",
+      environment: liveEnvironment,
+      resourceType: "mybrandos.owner",
+      resourceId: subject.ownerId,
+    },
+  };
 }
 
 function bindGovernedDraft(
@@ -602,6 +700,9 @@ export function parseActionBody(raw: unknown): ProposeActionInput {
   const body = raw as Record<string, unknown>;
   rejectIdentitySpoof(body);
   rejectConnectorSpoof(body);
+  if ("approved" in body || "humanApproved" in body || "publishNow" in body) {
+    throw new DigiAiError(400, "invalid_request", "Approval cannot be manufactured by a request flag.");
+  }
   if ("provider" in body || "model" in body) throw new DigiAiError(400, "invalid_request", "Provider and model selection is reserved to Digi AI.");
   const target = body.target && typeof body.target === "object" ? (body.target as ActionTarget) : undefined;
   if (!isActionClass(body.actionClass) || !isActionType(body.actionType) || !target) {

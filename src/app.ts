@@ -71,9 +71,9 @@ import {
   reconcileToolInvocation,
   rejectConnectorSpoof,
 } from "./connectors/service.js";
-import { ensureMybrandosDraftConnection, ensureMybrandosPublicConnection } from "./connectors/mybrandos/bootstrap.js";
+import { ensureMybrandosDraftConnection, ensureMybrandosPublicConnection, ensureMybrandosPublishConnection } from "./connectors/mybrandos/bootstrap.js";
 import { bindMybrandosReadClient } from "./connectors/mybrandos/runtime.js";
-import { runMybrandosCreateDraftAcceptance, runMybrandosPublicReadAcceptance } from "./connectors/mybrandos/acceptance.js";
+import { runMybrandosCreateDraftAcceptance, runMybrandosPublicReadAcceptance, runMybrandosPublishDraftAcceptance } from "./connectors/mybrandos/acceptance.js";
 import {
   advanceExecution,
   cancelExecution,
@@ -354,6 +354,7 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
   app.addHook("onReady", async () => {
     await ensureMybrandosPublicConnection(store, config);
     await ensureMybrandosDraftConnection(store, config);
+    await ensureMybrandosPublishConnection(store, config);
   });
 
   app.get("/health", async (): Promise<HealthResponse> => buildHealthResponse(config, pool, store, deps.drive));
@@ -967,6 +968,121 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         actor: identity.actor,
         caller: identity.caller,
         title,
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/mybrandos/publish-draft/propose", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      rejectSpoofedAuth(req.headers, req.url);
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      rejectIdentitySpoof(body);
+      rejectConnectorSpoof(body);
+      if ("ownerId" in body || "tenantId" in body || "slug" in body || "published" in body || "scheduledAt" in body || "approved" in body || "humanApproved" in body || "publishNow" in body) {
+        throw new DigiAiError(400, "invalid_request", "Owner, slug, publication, and approval flags are reserved to Digi AI.");
+      }
+      const caller = authenticateCaller(config, req.headers);
+      if (!caller) throw new DigiAiError(401, "unauthenticated", "Operator authentication is required.");
+      if (!isOperatorCaller(config, caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for the mybrandOS publish-draft probe.");
+      }
+      const identity = { caller, actor: { trustId: `svc:${caller.id}`, displayName: "platform-operator" } };
+      const result = await runMybrandosPublishDraftAcceptance({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        stage: "propose",
+        draftId: typeof body.draftId === "string" ? body.draftId : "",
+        title: typeof body.title === "string" ? body.title : "",
+        description: typeof body.description === "string" ? body.description : "",
+        contentDigest: typeof body.contentDigest === "string" ? body.contentDigest : "",
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/mybrandos/publish-draft/approve", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      rejectSpoofedAuth(req.headers, req.url);
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      rejectIdentitySpoof(body);
+      rejectConnectorSpoof(body);
+      if ("approved" in body || "humanApproved" in body || "publishNow" in body) {
+        throw new DigiAiError(400, "invalid_request", "Approval cannot be manufactured by a boolean flag.");
+      }
+      const caller = authenticateCaller(config, req.headers);
+      if (!caller) throw new DigiAiError(401, "unauthenticated", "Operator authentication is required.");
+      if (!isOperatorCaller(config, caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for the mybrandOS publish-draft probe.");
+      }
+      if (body.decision !== "APPROVE") {
+        throw new DigiAiError(400, "invalid_request", "Explicit decision APPROVE is required.");
+      }
+      const identity = { caller, actor: { trustId: `svc:${caller.id}`, displayName: "platform-operator" } };
+      const result = await runMybrandosPublishDraftAcceptance({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        stage: "approve",
+        actionIntentId: typeof body.actionIntentId === "string" ? body.actionIntentId : "",
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/mybrandos/publish-draft/reject", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      rejectSpoofedAuth(req.headers, req.url);
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      rejectIdentitySpoof(body);
+      const caller = authenticateCaller(config, req.headers);
+      if (!caller) throw new DigiAiError(401, "unauthenticated", "Operator authentication is required.");
+      if (!isOperatorCaller(config, caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for the mybrandOS publish-draft probe.");
+      }
+      if (body.decision !== "DENY") {
+        throw new DigiAiError(400, "invalid_request", "Explicit decision DENY is required.");
+      }
+      const identity = { caller, actor: { trustId: `svc:${caller.id}`, displayName: "platform-operator" } };
+      const result = await runMybrandosPublishDraftAcceptance({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        stage: "reject",
+        actionIntentId: typeof body.actionIntentId === "string" ? body.actionIntentId : "",
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/mybrandos/publish-draft/execute", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      rejectSpoofedAuth(req.headers, req.url);
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      rejectIdentitySpoof(body);
+      rejectConnectorSpoof(body);
+      const caller = authenticateCaller(config, req.headers);
+      if (!caller) throw new DigiAiError(401, "unauthenticated", "Operator authentication is required.");
+      if (!isOperatorCaller(config, caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for the mybrandOS publish-draft probe.");
+      }
+      const identity = { caller, actor: { trustId: `svc:${caller.id}`, displayName: "platform-operator" } };
+      const result = await runMybrandosPublishDraftAcceptance({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        stage: "execute",
+        actionIntentId: typeof body.actionIntentId === "string" ? body.actionIntentId : "",
+        authorizationId: typeof body.authorizationId === "string" ? body.authorizationId : "",
       });
       return reply.send({ ok: true, service: "digi-ai", ...result });
     } catch (err) {
