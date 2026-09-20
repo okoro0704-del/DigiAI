@@ -189,6 +189,13 @@ export function buildHealthResponse(
       reconciliation: { supported: true },
     },
     credentials: credentialHealth(),
+    mybrandosConnector: {
+      configured: Boolean(config.mybrandosUrl),
+      mode: "read-only",
+      authenticated: "not-required-for-public",
+      realWritesEnabled: false,
+      s2sInbound: false,
+    },
   };
 }
 

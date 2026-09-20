@@ -232,4 +232,11 @@ export type HealthResponse = {
     dynamicUserOAuthVault: { supported: boolean };
     platformServiceCredentials: { supported: boolean };
   };
+  mybrandosConnector?: {
+    configured: boolean;
+    mode: "read-only";
+    authenticated: "not-required-for-public" | "not-established";
+    realWritesEnabled: false;
+    s2sInbound: false;
+  };
 };

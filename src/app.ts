@@ -8,7 +8,6 @@ import { isMusicOutputFormat, isVocalMode } from "./contracts/music.js";
 import { isVideoAudioMode, isVideoQuality, isVideoResolution } from "./contracts/video.js";
 import { isSpeechTask } from "./contracts/speech.js";
 import { persistAudioAcceptanceFixture, persistDriveAcceptanceFixture, persistMusicAcceptanceFixture, persistVideoAcceptanceFixture } from "./media/acceptance.js";
-import { authenticateCaller } from "./identity/resolve.js";
 import { createDrive } from "./media/factory.js";
 import type { SovereignDrive } from "./media/drive.js";
 import type { HealthResponse } from "./contracts/response.js";
@@ -17,10 +16,10 @@ import type { TwinBriefInput, TwinOwnerActivity } from "./contracts/twin.js";
 import { HttpDigiNewsReader } from "./adapters/diginews.js";
 import { HttpDigiPediaReader } from "./adapters/digipedia.js";
 import type { DigiNewsReader, DigiPediaReader } from "./adapters/types.js";
-import { createTrustIdResolver, resolveRequestIdentity, type IdentityResolver } from "./identity/resolve.js";
+import { authenticateCaller, createTrustIdResolver, rejectSpoofedAuth, resolveRequestIdentity, type IdentityResolver } from "./identity/resolve.js";
 import { handleAsk } from "./intelligence/engine.js";
 import { handleTwinBrief } from "./intelligence/twin-brief.js";
-import { newId } from "./lib/crypto.js";
+import { headerValue, newId } from "./lib/crypto.js";
 import { DigiAiError } from "./lib/http.js";
 import { sanitizePublicMessage } from "./credentials/redact.js";
 import { bindSecureCredentialBackend, createSecureCredentialBackend, currentSecureCredentialBackend } from "./credentials/factory.js";
@@ -61,6 +60,7 @@ import {
   parseDecisionBody,
   parseGrantBody,
   proposeAction,
+  rejectIdentitySpoof,
   revokeGrant,
 } from "./authority/service.js";
 import { runOrchestrationAcceptance } from "./orchestration/acceptance.js";
@@ -69,7 +69,11 @@ import {
   inspectToolInvocation,
   listToolCatalog,
   reconcileToolInvocation,
+  rejectConnectorSpoof,
 } from "./connectors/service.js";
+import { ensureMybrandosPublicConnection } from "./connectors/mybrandos/bootstrap.js";
+import { bindMybrandosReadClient } from "./connectors/mybrandos/runtime.js";
+import { runMybrandosPublicReadAcceptance } from "./connectors/mybrandos/acceptance.js";
 import {
   advanceExecution,
   cancelExecution,
@@ -337,9 +341,19 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
   const resolver = options.resolver ?? createTrustIdResolver(config);
   const credentialBackend = options.credentialBackend ?? createSecureCredentialBackend(config);
   bindSecureCredentialBackend(credentialBackend);
+  bindMybrandosReadClient({
+    config: {
+      baseUrl: config.mybrandosUrl,
+      timeoutMs: config.mybrandosTimeoutMs,
+      environment: config.mybrandosEnvironment,
+    },
+  });
   void store.listCredentialMetadata().then((rows) => {
     if (credentialBackend instanceof RailwayPlatformServiceBackend) credentialBackend.hydrate(rows);
   }).catch(() => undefined);
+  app.addHook("onReady", async () => {
+    await ensureMybrandosPublicConnection(store, config);
+  });
 
   app.get("/health", async (): Promise<HealthResponse> => buildHealthResponse(config, pool, store, deps.drive));
 
@@ -891,6 +905,35 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
       const secret = await currentSecureCredentialBackend().resolveUsingMetadata(metadata);
       secret.reveal();
       return reply.send({ ok: true, service: "digi-ai", resolved: true, redacted: true, generation: secret.generation });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/mybrandos/public-read", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      rejectSpoofedAuth(req.headers, req.url);
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      rejectIdentitySpoof(body);
+      rejectConnectorSpoof(body);
+      const caller = authenticateCaller(config, req.headers);
+      if (!caller) throw new DigiAiError(401, "unauthenticated", "Operator authentication is required.");
+      if (!isOperatorCaller(config, caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required for the mybrandOS public-read probe.");
+      }
+      const token = headerValue(req.headers.authorization).toLowerCase().startsWith("bearer ")
+        || headerValue(req.headers["x-trustid-session"]);
+      const identity = token
+        ? await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver })
+        : { caller, actor: { trustId: `svc:${caller.id}`, displayName: "platform-operator" } };
+      const result = await runMybrandosPublicReadAcceptance({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        slug: typeof body.slug === "string" ? body.slug : config.mybrandosAcceptanceSlug,
+        operation: body.operation === "listPublishedAssets" ? "listPublishedAssets" : "inspectPublicDigitalLife",
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
     } catch (err) {
       return sendError(reply, err);
     }

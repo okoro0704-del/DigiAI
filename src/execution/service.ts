@@ -4,6 +4,7 @@ import {
   ACTION_SCHEMA_VERSION,
   isFixtureActionType,
   isFixtureMode,
+  isMybrandosReadActionType,
   type DigiAiActionExecution,
   type DigiAiActionExecutionReceipt,
   type DigiAiActionExecutionRequest,
@@ -73,10 +74,11 @@ export async function executeAuthorizedAction(input: {
       throw new DigiAiError(409, "cancelled", "The objective does not permit execution.");
     }
   }
-  if (!isFixtureActionType(intent.actionType)) {
+  if (isFixtureActionType(intent.actionType)) {
+    if (!input.allowFixture) throw new DigiAiError(403, "fixture_forbidden", "Fixture action execution is isolated from ordinary production callers.");
+  } else if (!isMybrandosReadActionType(intent.actionType)) {
     throw new DigiAiError(409, "EXECUTOR_NOT_FOUND", "Real external executors are not enabled.");
   }
-  if (!input.allowFixture) throw new DigiAiError(403, "fixture_forbidden", "Fixture action execution is isolated from ordinary production callers.");
   validateActionParameters(intent.actionType, intent.actionClass, parameters);
   const executor = resolveExecutor(intent.actionType);
   if (!executor) throw new DigiAiError(404, "EXECUTOR_NOT_FOUND", "No registered executor exists for that action type.");
@@ -131,7 +133,7 @@ export async function executeAuthorizedAction(input: {
     status: "PENDING",
     attemptCount: 0,
     externalIdempotencyKey: executionId,
-    fixtureMode: input.allowFixture && isFixtureMode(input.fixtureMode) ? input.fixtureMode : "SUCCESS",
+    fixtureMode: isFixtureActionType(intent.actionType) && input.allowFixture && isFixtureMode(input.fixtureMode) ? input.fixtureMode : "SUCCESS",
     connectionSelectionId: input.selectionId,
     createdAt: now,
     updatedAt: now,
@@ -287,6 +289,8 @@ async function persistOutcome(input: {
     execution.toolInvocationId = tool.toolInvocationId;
     execution.connectorId = tool.connectorId;
     execution.operationId = tool.operationId;
+    execution.connectionId = tool.connectionId;
+    execution.credentialRef = tool.credentialRef;
   }
   if (input.result.submitted) execution.submittedAt = execution.submittedAt ?? now;
   execution.externalReference = input.result.externalReference ?? execution.externalReference;
@@ -317,7 +321,13 @@ async function persistOutcome(input: {
     execution.completedAt = now;
     await input.store.putActionExecution(execution);
     await consumeQuiet(input.store, execution, input.actor, now);
-    const receipt = await writeReceipt(input.store, execution, "SUCCEEDED", input.result.evidence);
+    const receipt = await writeReceipt(input.store, execution, "SUCCEEDED", {
+      ...input.result.evidence,
+      connectionId: execution.connectionId ?? "",
+      connectorId: execution.connectorId ?? "",
+      toolInvocationId: execution.toolInvocationId ?? "",
+      credentialRef: execution.credentialRef ?? "",
+    });
     await audit(input.store, { eventType: input.reconciled ? "EXECUTION_RECONCILED" : "EXECUTION_SUCCEEDED", executionId: execution.executionId, status: "SUCCEEDED" });
     await syncStep(input.store, execution, "COMPLETED", receipt);
     return inspectSafe(execution, receipt);
@@ -371,7 +381,14 @@ async function syncStep(store: DigiAiStore, execution: DigiAiActionExecution, st
       ? {
           name: "actionResult",
           kind: "STRUCTURED_DATA",
-          data: { executionId: execution.executionId, receiptId: receipt.receiptId, executed: true, fixture: true, reference: receipt.resultReference },
+          data: {
+            executionId: execution.executionId,
+            receiptId: receipt.receiptId,
+            executed: true,
+            fixture: !isMybrandosReadActionType(execution.actionType),
+            retrieved: isMybrandosReadActionType(execution.actionType),
+            reference: receipt.resultReference,
+          },
           generated: false,
           retrieved: false,
           stepId: execution.stepId,
@@ -426,6 +443,7 @@ function inspectSafe(execution: DigiAiActionExecution, receipt?: DigiAiActionExe
     toolInvocationId: execution.toolInvocationId,
     connectorId: execution.connectorId,
     operationId: execution.operationId,
+    connectionId: execution.connectionId,
     createdAt: execution.createdAt,
     completedAt: execution.completedAt,
     executed: execution.status === "SUCCEEDED",
@@ -474,7 +492,7 @@ async function audit(store: DigiAiStore, event: Omit<ExecutionAuditEvent, "event
 
 export function parseExecuteBody(raw: unknown, allowFixture: boolean) {
   const body = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  if ("actorId" in body || "tenantId" in body || "applicationId" in body || "executorId" in body || "executorVersion" in body || "receiptStatus" in body || "externalReference" in body) {
+  if ("actorId" in body || "tenantId" in body || "applicationId" in body || "ownerId" in body || "executorId" in body || "executorVersion" in body || "receiptStatus" in body || "externalReference" in body) {
     throw new DigiAiError(400, "invalid_request", "Identity and executor fields are reserved to Digi AI.");
   }
   rejectConnectorSpoof(body);

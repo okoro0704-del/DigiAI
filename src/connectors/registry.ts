@@ -97,11 +97,43 @@ const securedConnector = connector({
   updatedAt: NOW,
 });
 
+function liveMybrandosEnvironment(): ConnectorEnvironment {
+  const explicit = (process.env.MYBRANDOS_ENVIRONMENT || "").trim().toUpperCase();
+  if (explicit === "PRODUCTION" || explicit === "STAGING") return explicit;
+  return process.env.NODE_ENV === "production" ? "PRODUCTION" : "STAGING";
+}
+
+function liveMybrandosConfigured(): boolean {
+  const url = (process.env.MYBRANDOS_URL || "https://mybrandos-production.up.railway.app").trim();
+  return Boolean(url);
+}
+
+const mybrandosConnector = connector({
+  connectorId: "mybrandos",
+  connectorType: "INTERNAL_SERVICE",
+  version: "3g-read-1",
+  displayName: "mybrandOS",
+  system: "mybrandos",
+  environment: liveMybrandosEnvironment(),
+  status: liveMybrandosConfigured() ? "CONFIGURED" : "UNAVAILABLE",
+  supportedOperations: ["mybrandos.inspectPublicDigitalLife", "mybrandos.listPublishedAssets"],
+  authenticationMode: "none",
+  capabilities: ["READ_ONLY", "PUBLIC"],
+  idempotencySupport: "SUPPORTED",
+  reconciliationSupport: "UNSUPPORTED",
+  cancellationSupport: "UNSUPPORTED",
+  healthState: "unknown",
+  requiresCredential: false,
+  createdAt: NOW,
+  updatedAt: NOW,
+});
+
 const CONNECTORS: Record<string, DigiAiToolConnector> = {
   "fixture-catalog": catalogConnector,
   "fixture-actions": actionsConnector,
   "fixture-disabled": disabledConnector,
   "fixture-secured": securedConnector,
+  mybrandos: mybrandosConnector,
 };
 
 const OPERATIONS: Record<string, DigiAiToolOperation> = {
@@ -258,10 +290,51 @@ const OPERATIONS: Record<string, DigiAiToolOperation> = {
     version: "1",
     requiresCredential: true,
   },
+  "mybrandos.inspectPublicDigitalLife": {
+    operationId: "mybrandos.inspectPublicDigitalLife",
+    connectorId: "mybrandos",
+    operationName: "inspectPublicDigitalLife",
+    actionTypes: ["INSPECT_MYBRANDOS_PUBLIC"],
+    inputSchema: schema(["slug"]),
+    outputSchema: schema(["slug", "publicEnabled", "displayName", "publishedAssetCount", "retrievedAt", "privacyClass", "source", "factKind"]),
+    riskClass: "low",
+    sideEffectClass: "READ_ONLY",
+    idempotencyMode: "SUPPORTED",
+    reconciliationMode: "UNSUPPORTED",
+    cancellationMode: "UNSUPPORTED",
+    timeoutPolicy: { beforeSubmissionMs: 8000, afterSubmission: "UNKNOWN_OUTCOME" },
+    enabled: true,
+    version: "1",
+    requiresCredential: false,
+  },
+  "mybrandos.listPublishedAssets": {
+    operationId: "mybrandos.listPublishedAssets",
+    connectorId: "mybrandos",
+    operationName: "listPublishedAssets",
+    actionTypes: ["LIST_MYBRANDOS_PUBLIC_ASSETS"],
+    inputSchema: schema(["slug"]),
+    outputSchema: schema(["slug", "publishedAssetCount", "retrievedAt", "privacyClass", "source", "factKind"]),
+    riskClass: "low",
+    sideEffectClass: "READ_ONLY",
+    idempotencyMode: "SUPPORTED",
+    reconciliationMode: "UNSUPPORTED",
+    cancellationMode: "UNSUPPORTED",
+    timeoutPolicy: { beforeSubmissionMs: 8000, afterSubmission: "UNKNOWN_OUTCOME" },
+    enabled: true,
+    version: "1",
+    requiresCredential: false,
+  },
 };
 
 export function getConnector(connectorId: string): DigiAiToolConnector | undefined {
-  return CONNECTORS[connectorId];
+  const row = CONNECTORS[connectorId];
+  if (!row) return undefined;
+  if (connectorId !== "mybrandos") return row;
+  return {
+    ...row,
+    environment: liveMybrandosEnvironment(),
+    status: liveMybrandosConfigured() ? "CONFIGURED" : "UNAVAILABLE",
+  };
 }
 
 export function getOperation(operationId: string): DigiAiToolOperation | undefined {
@@ -271,7 +344,7 @@ export function getOperation(operationId: string): DigiAiToolOperation | undefin
 export function resolveByActionType(actionType: ActionType, environment?: ConnectorEnvironment): { connector: DigiAiToolConnector; operation: DigiAiToolOperation } {
   const operation = Object.values(OPERATIONS).find((row) => row.actionTypes.includes(actionType));
   if (!operation) throw new DigiAiError(404, "ACTION_TYPE_MISMATCH", "No registered connector operation exists for that action type.");
-  const connector = CONNECTORS[operation.connectorId];
+  const connector = getConnector(operation.connectorId);
   if (!connector) throw new DigiAiError(404, "CONNECTOR_DISABLED", "Connector was not found.");
   if (environment === "PRODUCTION" && connector.environment !== "PRODUCTION") {
     throw new DigiAiError(403, "ENVIRONMENT_DENIED", "A staging connector cannot be used for production.");
@@ -291,10 +364,10 @@ export function sanitizedCatalog(): SanitizedToolCatalogRow[] {
   return Object.values(OPERATIONS).map((row) => ({
     operationId: row.operationId,
     operationName: row.operationName,
-    description: `${row.sideEffectClass} fixture operation ${row.operationName}`,
+    description: `${row.sideEffectClass} ${row.connectorId === "mybrandos" ? "mybrandOS" : "fixture"} operation ${row.operationName}`,
     connectorId: row.connectorId,
     sideEffectClass: row.sideEffectClass,
-    available: row.enabled && CONNECTORS[row.connectorId]?.status === "CONFIGURED",
+    available: row.enabled && getConnector(row.connectorId)?.status === "CONFIGURED",
     inputShape: row.inputSchema.required,
   }));
 }

@@ -232,3 +232,57 @@ export const fixtureMessenger = makeFixture("fixture-messenger", "MESSAGE_FIXTUR
 export const fixtureValue = makeFixture("fixture-value", "SPEND_FIXTURE", "SPEND", "value");
 export const fixtureDeployer = makeFixture("fixture-deployer", "DEPLOY_FIXTURE", "DEPLOY", "deployment");
 export const fixtureDelete = makeFixture("fixture-delete", "DELETE_FIXTURE", "DELETE", "deletion");
+
+export const mybrandosPublicReader: DigiAiActionExecutor = {
+  executorId: "mybrandos-public-reader",
+  version: "3g-read-1",
+  supportedActionTypes: ["INSPECT_MYBRANDOS_PUBLIC", "LIST_MYBRANDOS_PUBLIC_ASSETS"],
+  supportedActionClasses: ["KNOW"],
+  capabilities: ["NATIVE_IDEMPOTENCY"],
+  async execute(context) {
+    if (!context.store || !context.actor || !context.caller || !context.execution) {
+      return { outcome: "REJECTED_BEFORE_SUBMISSION", submitted: false, invoked: false, failureCode: "EXECUTOR_REJECTED" };
+    }
+    const result = await invokeTool({
+      store: context.store,
+      execution: context.execution,
+      actor: context.actor,
+      caller: context.caller,
+      selectionId: context.execution.connectionSelectionId,
+    });
+    return mapToolToExecutor(result);
+  },
+  async resume(context) {
+    if (!context.store || !context.actor || !context.caller || !context.execution) {
+      return { outcome: "REJECTED_BEFORE_SUBMISSION", submitted: false, invoked: false, failureCode: "EXECUTOR_REJECTED" };
+    }
+    const result = await invokeTool({
+      store: context.store,
+      execution: context.execution,
+      actor: context.actor,
+      caller: context.caller,
+      resume: true,
+      selectionId: context.execution.connectionSelectionId,
+    });
+    return mapToolToExecutor(result);
+  },
+  async inspect(context) {
+    if (context.existingExternalReference) {
+      return {
+        outcome: "SUCCEEDED",
+        submitted: true,
+        invoked: false,
+        externalReference: context.existingExternalReference,
+        resultReference: context.execution?.resultReference,
+        evidence: { inspected: context.existingExternalReference, system: "mybrandos" },
+      };
+    }
+    return { outcome: "UNKNOWN_OUTCOME", submitted: false, invoked: false, failureCode: "UNKNOWN_REMOTE_OUTCOME" };
+  },
+  async reconcile() {
+    return { outcome: "UNKNOWN_OUTCOME", submitted: false, invoked: false, failureCode: "UNKNOWN_REMOTE_OUTCOME" };
+  },
+  async cancel() {
+    return { outcome: "FAILED", submitted: false, invoked: false, failureCode: "EXECUTOR_REJECTED" };
+  },
+};

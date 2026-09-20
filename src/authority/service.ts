@@ -479,7 +479,7 @@ function sanitizeParameters(raw: ActionParameters): ActionParameters {
 }
 
 export function rejectIdentitySpoof(body: Record<string, unknown>) {
-  if ("applicationId" in body || "actorId" in body || "grantorActorId" in body) {
+  if ("applicationId" in body || "actorId" in body || "grantorActorId" in body || "ownerId" in body || "tenantId" in body) {
     throw new DigiAiError(400, "invalid_request", "Identity fields are reserved to Digi AI.");
   }
 }

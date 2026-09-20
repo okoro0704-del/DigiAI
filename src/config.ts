@@ -136,6 +136,12 @@ export function loadConfig() {
       .split(",")
       .map((part) => part.trim())
       .filter(Boolean),
+    mybrandosUrl: env("MYBRANDOS_URL", "https://mybrandos-production.up.railway.app").replace(/\/$/, ""),
+    mybrandosEnvironment: (env("MYBRANDOS_ENVIRONMENT", nodeEnv === "production" ? "PRODUCTION" : "STAGING").toUpperCase() === "PRODUCTION"
+      ? "PRODUCTION"
+      : "STAGING") as "STAGING" | "PRODUCTION",
+    mybrandosTimeoutMs: Number(env("MYBRANDOS_TIMEOUT_MS", "8000")),
+    mybrandosAcceptanceSlug: env("MYBRANDOS_ACCEPTANCE_SLUG", "mrfundzman"),
   };
 }
 

@@ -162,8 +162,14 @@ export const FIXTURE_ACTION_TYPES: ActionType[] = [
   "DELETE_FIXTURE",
 ];
 
+export const MYBRANDOS_READ_ACTION_TYPES: ActionType[] = ["INSPECT_MYBRANDOS_PUBLIC", "LIST_MYBRANDOS_PUBLIC_ASSETS"];
+
 export function isFixtureActionType(value: unknown): value is ActionType {
   return typeof value === "string" && (FIXTURE_ACTION_TYPES as string[]).includes(value);
+}
+
+export function isMybrandosReadActionType(value: unknown): value is ActionType {
+  return typeof value === "string" && (MYBRANDOS_READ_ACTION_TYPES as string[]).includes(value);
 }
 
 export function isFixtureMode(value: unknown): value is FixtureMode {

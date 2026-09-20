@@ -15,6 +15,9 @@ import { resolveEligibleConnection, resolveSecretForConnection } from "../connec
 import { resolveCredential } from "./credentials.js";
 import { toolRequestDigest, toolResponseDigest } from "./digest.js";
 import { runFixtureConnector } from "./fixtures.js";
+import { runMybrandosConnector } from "./mybrandos/runtime.js";
+import { requireSlug } from "../lib/slug.js";
+import { isMybrandosReadActionType } from "../contracts/execution.js";
 import { assertNotArbitraryNetwork } from "./network.js";
 import { assertOperationAllowed } from "./policy.js";
 import { getConnector, getOperation, resolveByActionType, sanitizedCatalog } from "./registry.js";
@@ -36,6 +39,10 @@ const FORBIDDEN_CREDENTIAL_FIELDS = [
   "token",
   "secret",
   "connectionId",
+  "path",
+  "method",
+  "endpoint",
+  "href",
 ];
 
 export function rejectConnectorSpoof(body: Record<string, unknown>) {
@@ -70,7 +77,13 @@ export async function invokeTool(input: {
   if (existing && input.reconcile) return reconcileToolInvocation({ store: input.store, actor: input.actor, caller: input.caller, toolInvocationId: existing.toolInvocationId });
   if (existing && input.resume) return resumeToolInvocation({ store: input.store, actor: input.actor, caller: input.caller, invocation: existing });
 
-  const environment = String(execution.parameters.environment ?? "STAGING").toUpperCase() === "PRODUCTION" ? "PRODUCTION" : "STAGING";
+  const environment =
+    String(
+      execution.parameters.environment ??
+        (isMybrandosReadActionType(execution.actionType) ? (getConnector("mybrandos")?.environment ?? "STAGING") : "STAGING"),
+    ).toUpperCase() === "PRODUCTION"
+      ? "PRODUCTION"
+      : "STAGING";
   const resolved = resolveByActionType(execution.actionType, environment);
   if (resolved.connector.status === "DISABLED") throw new DigiAiError(409, "CONNECTOR_DISABLED", "The connector is disabled.");
   if (!resolved.operation.enabled) throw new DigiAiError(409, "OPERATION_DISABLED", "The connector operation is disabled.");
@@ -82,6 +95,9 @@ export async function invokeTool(input: {
   if (resolved.operation.operationId === "fixture.delete") {
     minimized.resourceType = execution.target.resourceType;
     minimized.resourceId = execution.target.resourceId;
+  }
+  if (resolved.connector.connectorId === "mybrandos") {
+    minimized.slug = requireSlug(execution.target.resourceId, "mybrandOS");
   }
   validateToolInput(resolved.operation, minimized);
   const digest = toolRequestDigest({
@@ -103,20 +119,36 @@ export async function invokeTool(input: {
     system: resolved.connector.system,
     credentialRef: resolved.connector.credentialRef,
   });
-  const connection = (resolved.operation.requiresCredential || resolved.connector.requiresCredential)
-    ? await resolveEligibleConnection({
-        store: input.store,
-        actor: input.actor,
-        caller: input.caller,
-        system: resolved.connector.system,
+  let connection;
+  try {
+    connection = (resolved.operation.requiresCredential || resolved.connector.requiresCredential || resolved.connector.connectorId === "mybrandos")
+      ? await resolveEligibleConnection({
+          store: input.store,
+          actor: input.actor,
+          caller: input.caller,
+          system: resolved.connector.system,
+          connectorId: resolved.connector.connectorId,
+          environment: resolved.connector.environment === "PRODUCTION" ? "PRODUCTION" : resolved.connector.environment === "FIXTURE" ? "TEST" : "STAGING",
+          requiredScopes: requiredScopesForOperation(resolved.operation.operationId),
+          selectionId: input.selectionId,
+          executionId: execution.executionId,
+          objectiveId: execution.objectiveId,
+        })
+      : undefined;
+  } catch (err) {
+    if (resolved.connector.connectorId === "mybrandos") {
+      await audit(input.store, {
+        eventType: "MYBRANDOS_READ_DENIED",
+        toolInvocationId: "unbound",
         connectorId: resolved.connector.connectorId,
-        environment: resolved.connector.environment === "PRODUCTION" ? "PRODUCTION" : resolved.connector.environment === "FIXTURE" ? "TEST" : "STAGING",
-        requiredScopes: requiredScopesForOperation(resolved.operation.operationId),
-        selectionId: input.selectionId,
+        operationId: resolved.operation.operationId,
         executionId: execution.executionId,
-        objectiveId: execution.objectiveId,
-      })
-    : undefined;
+        actorId: execution.actorId,
+        tenantId: execution.tenantId,
+      });
+    }
+    throw err;
+  }
 
   const now = nowIso();
   const invocation: DigiAiToolInvocation = {
@@ -143,6 +175,10 @@ export async function invokeTool(input: {
   const claimed = await input.store.beginToolInvocation(invocation);
   await audit(input.store, { eventType: "TOOL_INVOCATION_REQUESTED", toolInvocationId: claimed.invocation.toolInvocationId, executionId: execution.executionId, actorId: execution.actorId, tenantId: execution.tenantId });
   await audit(input.store, { eventType: "CONNECTOR_RESOLVED", toolInvocationId: claimed.invocation.toolInvocationId, connectorId: resolved.connector.connectorId, operationId: resolved.operation.operationId });
+  if (resolved.connector.connectorId === "mybrandos") {
+    await audit(input.store, { eventType: "MYBRANDOS_READ_REQUESTED", toolInvocationId: claimed.invocation.toolInvocationId, connectorId: resolved.connector.connectorId, operationId: resolved.operation.operationId, executionId: execution.executionId, actorId: execution.actorId, tenantId: execution.tenantId });
+    await audit(input.store, { eventType: "MYBRANDOS_READ_AUTHORIZED", toolInvocationId: claimed.invocation.toolInvocationId, connectorId: resolved.connector.connectorId, operationId: resolved.operation.operationId });
+  }
   if (!resolved.operation.requiresCredential) {
     await audit(input.store, { eventType: "CREDENTIAL_RESOLVED", toolInvocationId: claimed.invocation.toolInvocationId, connectorId: resolved.connector.connectorId });
   }
@@ -216,6 +252,9 @@ async function submit(
   invocation.updatedAt = nowIso();
   await store.putToolInvocation(invocation);
   await audit(store, { eventType: "TOOL_SUBMISSION_STARTED", toolInvocationId: invocation.toolInvocationId, status: "SUBMITTING" });
+  if (connector.connectorId === "mybrandos") {
+    await audit(store, { eventType: "MYBRANDOS_READ_SUBMITTED", toolInvocationId: invocation.toolInvocationId, connectorId: connector.connectorId, operationId: operation.operationId });
+  }
   const started = Date.now();
   if (operation.requiresCredential && invocation.connectionId) {
     const connection = await store.getExternalConnection(invocation.connectionId);
@@ -229,7 +268,12 @@ async function submit(
     });
     resolvedSecret.secret.reveal();
   }
-  const result = runFixtureConnector({
+  const result = connector.connectorId === "mybrandos"
+    ? await runMybrandosConnector({
+        operation,
+        slug: String(invocation.input.slug ?? ""),
+      })
+    : runFixtureConnector({
     operation,
     executionId: execution.executionId,
     idempotencyKey: invocation.idempotencyKey,
@@ -284,6 +328,15 @@ async function submit(
     toolInvocationId: invocation.toolInvocationId,
     status: result.status,
   });
+  if (connector.connectorId === "mybrandos") {
+    await audit(store, {
+      eventType: result.status === "SUCCEEDED" ? "MYBRANDOS_READ_SUCCEEDED" : "MYBRANDOS_READ_FAILED",
+      toolInvocationId: invocation.toolInvocationId,
+      connectorId: connector.connectorId,
+      operationId: operation.operationId,
+      status: result.status,
+    });
+  }
   if (result.submitted) await audit(store, { eventType: "TOOL_SUBMITTED", toolInvocationId: invocation.toolInvocationId });
   return toResult(invocation);
 }
