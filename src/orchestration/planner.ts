@@ -57,6 +57,10 @@ function inferFixture(instruction: string, desired?: string[]): OrchestrationFix
   const text = `${instruction} ${(desired ?? []).join(" ")}`.toLowerCase();
   if (/\bcycle\b/.test(text)) return "cycle";
   if (/\bauthority-create\b|\bgenerate_campaign_copy\b/.test(text)) return "authority-create";
+  if (/\baction-optional-fail\b/.test(text)) return "action-optional-fail";
+  if (/\baction-required-fail\b/.test(text)) return "action-required-fail";
+  if (/\baction-unknown\b/.test(text)) return "action-unknown";
+  if (/\baction-publish-fixture\b|\bpublish_fixture\b/.test(text)) return "action-publish-fixture";
   if (/\bauthority-publish-optional\b|\boptional publish\b/.test(text)) return "authority-publish-optional";
   if (/\bauthority-publish\b|\bpublish_mybrandos\b/.test(text)) return "authority-publish";
   if (/\bsend_money\b|\bignore all rules\b/.test(text)) return "injection";
@@ -85,6 +89,32 @@ function graphFor(fixture: OrchestrationFixture): PlannedStep[] {
           actionType: "GENERATE_CAMPAIGN_COPY",
           target: { resourceType: "campaign", resourceId: "campaign-copy" },
           parameters: { contentReference: "campaign-copy" },
+        },
+      },
+    ];
+  }
+  if (fixture === "action-publish-fixture" || fixture === "action-optional-fail" || fixture === "action-required-fail" || fixture === "action-unknown") {
+    return [
+      {
+        stepKey: "write",
+        capability: "WRITE",
+        dependencies: [],
+        inputBindings: textIn("objective.instruction"),
+        outputBindings: textOut("campaignCopy"),
+        required: true,
+      },
+      {
+        stepKey: "publish",
+        capability: "ACTION",
+        dependencies: ["write"],
+        inputBindings: textIn("campaignCopy"),
+        outputBindings: textOut("publishResult"),
+        required: fixture !== "action-optional-fail",
+        governedAction: {
+          actionClass: "PUBLISH",
+          actionType: "PUBLISH_FIXTURE_POST",
+          target: { resourceType: "fixture-post", resourceId: "draft-1" },
+          parameters: { contentReference: "draft-1", contentDigest: "digest-v1", destination: "fixture", visibility: "public" },
         },
       },
     ];

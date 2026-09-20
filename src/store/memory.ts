@@ -18,6 +18,12 @@ import type {
   DigiAiHumanDecision,
   DigiAiHumanDecisionRequest,
 } from "../contracts/authority.js";
+import type {
+  DigiAiActionExecution,
+  DigiAiActionExecutionReceipt,
+  DigiAiActionExecutionRequest,
+  ExecutionAuditEvent,
+} from "../contracts/execution.js";
 import type { DigiAiExecutionPlan, DigiAiExecutionStep, DigiAiObjective } from "../contracts/orchestration.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
@@ -54,6 +60,10 @@ export class MemoryStore implements DigiAiStore {
   readonly decisionRequests: DigiAiHumanDecisionRequest[] = [];
   readonly actionAuthorizations: DigiAiActionAuthorization[] = [];
   readonly authorityAudit: AuthorityAuditEvent[] = [];
+  readonly actionExecutions: DigiAiActionExecution[] = [];
+  readonly actionExecutionRequests: DigiAiActionExecutionRequest[] = [];
+  readonly actionExecutionReceipts: DigiAiActionExecutionReceipt[] = [];
+  readonly executionAudit: ExecutionAuditEvent[] = [];
   private writable = true;
   private readonly creditLocks = new Map<string, Promise<void>>();
   private readonly authorityLocks = new Map<string, Promise<void>>();
@@ -618,6 +628,7 @@ export class MemoryStore implements DigiAiStore {
         row.status = "expired";
         throw new DigiAiError(409, "AUTHORIZATION_EXPIRED", "Authorization has expired.");
       }
+      if (row.status !== "issued" && row.status !== "claimed") throw new DigiAiError(409, "AUTHORITY_INVALID", "Authorization cannot be consumed.");
       row.status = "consumed";
       row.consumedAt = input.now;
       this.authorityAudit.push({
@@ -640,6 +651,116 @@ export class MemoryStore implements DigiAiStore {
     return this.authorityAudit.filter(
       (row) => (!query?.actionIntentId || row.actionIntentId === query.actionIntentId) && (!query?.grantId || row.grantId === query.grantId),
     );
+  }
+
+  actionExecutionStatus(): LedgerStatus {
+    return this.ledgerStatus();
+  }
+
+  async claimActionAuthorization(input: {
+    authorizationId: string;
+    actorId: string;
+    applicationId: string;
+    tenantId?: string;
+    now: string;
+    execution: DigiAiActionExecution;
+  }) {
+    return this.withAuthorityLock(input.authorizationId, async () => {
+      const row = this.actionAuthorizations.find((item) => item.authorizationId === input.authorizationId);
+      if (!row) throw new DigiAiError(404, "not_found", "Action authorization was not found.");
+      if (row.actorId !== input.actorId || row.applicationId !== input.applicationId) {
+        throw new DigiAiError(403, "cross_tenant_forbidden", "That authorization is not usable by this caller.");
+      }
+      if (row.tenantId && input.tenantId && row.tenantId !== input.tenantId) {
+        throw new DigiAiError(403, "cross_tenant_forbidden", "That authorization is not usable by this tenant.");
+      }
+      if (row.status === "consumed") throw new DigiAiError(409, "AUTHORIZATION_CONSUMED", "Authorization has already been consumed.");
+      if (row.status === "invalidated") throw new DigiAiError(409, "AUTHORIZATION_INVALIDATED", "Authorization is no longer valid.");
+      if (row.status === "expired" || (row.expiresAt && row.expiresAt <= input.now)) {
+        row.status = "expired";
+        throw new DigiAiError(409, "AUTHORIZATION_EXPIRED", "Authorization has expired.");
+      }
+      if (row.status === "claimed" && row.claimedByExecutionId) {
+        const existing = this.actionExecutions.find((item) => item.executionId === row.claimedByExecutionId);
+        if (existing) return { authorization: row, execution: existing, created: false };
+        throw new DigiAiError(409, "AUTHORIZATION_CONSUMED", "Authorization is already claimed.");
+      }
+      row.status = "claimed";
+      row.claimedByExecutionId = input.execution.executionId;
+      row.claimedAt = input.now;
+      input.execution.status = "AUTHORIZED";
+      const idx = this.actionExecutions.findIndex((item) => item.executionId === input.execution.executionId);
+      if (idx >= 0) this.actionExecutions[idx] = input.execution;
+      else this.actionExecutions.push(input.execution);
+      return { authorization: row, execution: input.execution, created: true };
+    });
+  }
+
+  async putActionExecutionRequest(row: DigiAiActionExecutionRequest) {
+    const idx = this.actionExecutionRequests.findIndex(
+      (item) =>
+        item.executionRequestId === row.executionRequestId
+        || (item.applicationId === row.applicationId && item.actorId === row.actorId && item.idempotencyKey === row.idempotencyKey),
+    );
+    if (idx >= 0) this.actionExecutionRequests[idx] = row;
+    else this.actionExecutionRequests.push(row);
+  }
+
+  async putActionExecution(row: DigiAiActionExecution) {
+    const idx = this.actionExecutions.findIndex((item) => item.executionId === row.executionId);
+    if (idx >= 0) this.actionExecutions[idx] = row;
+    else this.actionExecutions.push(row);
+  }
+
+  async beginActionExecution(executionId: string, now: string, opts?: { resume?: boolean }) {
+    return this.withAuthorityLock(`exec:${executionId}`, async () => {
+      const row = this.actionExecutions.find((item) => item.executionId === executionId);
+      if (!row) throw new DigiAiError(404, "not_found", "Action execution was not found.");
+      if (row.status === "SUCCEEDED" || row.status === "FAILED" || row.status === "CANCELLED") {
+        return { execution: row, invoke: false };
+      }
+      if (row.status === "UNKNOWN_OUTCOME" && !opts?.resume) return { execution: row, invoke: false };
+      if (row.status === "RUNNING") return { execution: row, invoke: false };
+      if (row.status === "WAITING" && !opts?.resume) return { execution: row, invoke: false };
+      row.status = "RUNNING";
+      row.startedAt = row.startedAt ?? now;
+      row.attemptCount += 1;
+      row.updatedAt = now;
+      return { execution: row, invoke: true };
+    });
+  }
+
+  async getActionExecution(executionId: string) {
+    return this.actionExecutions.find((row) => row.executionId === executionId) ?? null;
+  }
+
+  async getExecutionByAuthorization(authorizationId: string) {
+    return this.actionExecutions.find((row) => row.authorizationId === authorizationId) ?? null;
+  }
+
+  async findExecutionByIdempotency(applicationId: string, actorId: string, idempotencyKey: string) {
+    const request = this.actionExecutionRequests.find(
+      (row) => row.applicationId === applicationId && row.actorId === actorId && row.idempotencyKey === idempotencyKey,
+    );
+    return request ? this.actionExecutions.find((row) => row.executionRequestId === request.executionRequestId) ?? null : null;
+  }
+
+  async putActionExecutionReceipt(row: DigiAiActionExecutionReceipt) {
+    const idx = this.actionExecutionReceipts.findIndex((item) => item.receiptId === row.receiptId);
+    if (idx >= 0) this.actionExecutionReceipts[idx] = row;
+    else this.actionExecutionReceipts.push(row);
+  }
+
+  async getActionExecutionReceipt(receiptId: string) {
+    return this.actionExecutionReceipts.find((row) => row.receiptId === receiptId) ?? null;
+  }
+
+  async appendExecutionAudit(row: ExecutionAuditEvent) {
+    this.executionAudit.push(row);
+  }
+
+  async listExecutionAudit(executionId: string) {
+    return this.executionAudit.filter((row) => row.executionId === executionId);
   }
 
   private async withAuthorityLock<T>(key: string, fn: () => Promise<T>): Promise<T> {

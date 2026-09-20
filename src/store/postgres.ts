@@ -17,6 +17,12 @@ import type {
   DigiAiHumanDecision,
   DigiAiHumanDecisionRequest,
 } from "../contracts/authority.js";
+import type {
+  DigiAiActionExecution,
+  DigiAiActionExecutionReceipt,
+  DigiAiActionExecutionRequest,
+  ExecutionAuditEvent,
+} from "../contracts/execution.js";
 import type { DigiAiExecutionPlan, DigiAiExecutionStep, DigiAiObjective } from "../contracts/orchestration.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
@@ -204,6 +210,39 @@ CREATE TABLE IF NOT EXISTS ai_authority_audit (
   event_id TEXT PRIMARY KEY,
   action_intent_id TEXT,
   grant_id TEXT,
+  event_type TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_action_execution_requests (
+  execution_request_id TEXT PRIMARY KEY,
+  action_intent_id TEXT NOT NULL,
+  authorization_id TEXT NOT NULL,
+  application_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ai_action_execution_requests_idempotency
+  ON ai_action_execution_requests (application_id, actor_id, idempotency_key);
+CREATE TABLE IF NOT EXISTS ai_action_executions (
+  execution_id TEXT PRIMARY KEY,
+  execution_request_id TEXT NOT NULL,
+  authorization_id TEXT NOT NULL UNIQUE,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_action_execution_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_action_execution_audit (
+  event_id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
   event_type TEXT NOT NULL,
   payload JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1102,6 +1141,7 @@ export class PostgresStore implements DigiAiStore {
         await client.query(`UPDATE ai_action_authorizations SET payload = $2::jsonb WHERE authorization_id = $1`, [input.authorizationId, JSON.stringify(row)]);
         throw new DigiAiError(409, "AUTHORIZATION_EXPIRED", "Authorization has expired.");
       }
+      if (row.status !== "issued" && row.status !== "claimed") throw new DigiAiError(409, "AUTHORITY_INVALID", "Authorization cannot be consumed.");
       row.status = "consumed";
       row.consumedAt = input.now;
       await client.query(`UPDATE ai_action_authorizations SET payload = $2::jsonb WHERE authorization_id = $1`, [input.authorizationId, JSON.stringify(row)]);
@@ -1127,6 +1167,158 @@ export class PostgresStore implements DigiAiStore {
     return result.rows
       .map((row) => row.payload as AuthorityAuditEvent)
       .filter((row) => (!query?.actionIntentId || row.actionIntentId === query.actionIntentId) && (!query?.grantId || row.grantId === query.grantId));
+  }
+
+  actionExecutionStatus(): LedgerStatus {
+    return this.ledgerStatus();
+  }
+
+  async claimActionAuthorization(input: {
+    authorizationId: string;
+    actorId: string;
+    applicationId: string;
+    tenantId?: string;
+    now: string;
+    execution: DigiAiActionExecution;
+  }) {
+    return this.withCreditTx(async (client) => {
+      const found = await client.query(`SELECT payload FROM ai_action_authorizations WHERE authorization_id = $1 FOR UPDATE`, [input.authorizationId]);
+      if (!found.rows[0]) throw new DigiAiError(404, "not_found", "Action authorization was not found.");
+      const row = found.rows[0].payload as DigiAiActionAuthorization;
+      if (row.actorId !== input.actorId || row.applicationId !== input.applicationId) {
+        throw new DigiAiError(403, "cross_tenant_forbidden", "That authorization is not usable by this caller.");
+      }
+      if (row.tenantId && input.tenantId && row.tenantId !== input.tenantId) {
+        throw new DigiAiError(403, "cross_tenant_forbidden", "That authorization is not usable by this tenant.");
+      }
+      if (row.status === "consumed") throw new DigiAiError(409, "AUTHORIZATION_CONSUMED", "Authorization has already been consumed.");
+      if (row.status === "invalidated") throw new DigiAiError(409, "AUTHORIZATION_INVALIDATED", "Authorization is no longer valid.");
+      if (row.status === "expired" || (row.expiresAt && row.expiresAt <= input.now)) {
+        row.status = "expired";
+        await client.query(`UPDATE ai_action_authorizations SET payload = $2::jsonb WHERE authorization_id = $1`, [input.authorizationId, JSON.stringify(row)]);
+        throw new DigiAiError(409, "AUTHORIZATION_EXPIRED", "Authorization has expired.");
+      }
+      if (row.status === "claimed" && row.claimedByExecutionId) {
+        const existing = await client.query(`SELECT payload FROM ai_action_executions WHERE execution_id = $1`, [row.claimedByExecutionId]);
+        if (existing.rows[0]) {
+          return { authorization: row, execution: existing.rows[0].payload as DigiAiActionExecution, created: false };
+        }
+        throw new DigiAiError(409, "AUTHORIZATION_CONSUMED", "Authorization is already claimed.");
+      }
+      row.status = "claimed";
+      row.claimedByExecutionId = input.execution.executionId;
+      row.claimedAt = input.now;
+      input.execution.status = "AUTHORIZED";
+      await client.query(`UPDATE ai_action_authorizations SET payload = $2::jsonb WHERE authorization_id = $1`, [input.authorizationId, JSON.stringify(row)]);
+      await client.query(
+        `INSERT INTO ai_action_executions (execution_id, execution_request_id, authorization_id, payload, created_at, updated_at)
+         VALUES ($1,$2,$3,$4::jsonb,$5,$6)
+         ON CONFLICT (execution_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`,
+        [input.execution.executionId, input.execution.executionRequestId, input.authorizationId, JSON.stringify(input.execution), input.execution.createdAt, input.now],
+      );
+      return { authorization: row, execution: input.execution, created: true };
+    });
+  }
+
+  async putActionExecutionRequest(row: DigiAiActionExecutionRequest) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_action_execution_requests (execution_request_id, action_intent_id, authorization_id, application_id, actor_id, idempotency_key, payload, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
+       ON CONFLICT (execution_request_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      [row.executionRequestId, row.actionIntentId, row.authorizationId, row.applicationId, row.actorId, row.idempotencyKey, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async putActionExecution(row: DigiAiActionExecution) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_action_executions (execution_id, execution_request_id, authorization_id, payload, created_at, updated_at)
+       VALUES ($1,$2,$3,$4::jsonb,$5,$6)
+       ON CONFLICT (execution_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`,
+      [row.executionId, row.executionRequestId, row.authorizationId, JSON.stringify(row), row.createdAt, row.updatedAt],
+    );
+  }
+
+  async beginActionExecution(executionId: string, now: string, opts?: { resume?: boolean }) {
+    return this.withCreditTx(async (client) => {
+      const found = await client.query(`SELECT payload FROM ai_action_executions WHERE execution_id = $1 FOR UPDATE`, [executionId]);
+      if (!found.rows[0]) throw new DigiAiError(404, "not_found", "Action execution was not found.");
+      const row = found.rows[0].payload as DigiAiActionExecution;
+      if (row.status === "SUCCEEDED" || row.status === "FAILED" || row.status === "CANCELLED") {
+        return { execution: row, invoke: false };
+      }
+      if (row.status === "UNKNOWN_OUTCOME" && !opts?.resume) return { execution: row, invoke: false };
+      if (row.status === "RUNNING") return { execution: row, invoke: false };
+      if (row.status === "WAITING" && !opts?.resume) return { execution: row, invoke: false };
+      row.status = "RUNNING";
+      row.startedAt = row.startedAt ?? now;
+      row.attemptCount += 1;
+      row.updatedAt = now;
+      await client.query(
+        `UPDATE ai_action_executions SET payload = $2::jsonb, updated_at = $3 WHERE execution_id = $1`,
+        [executionId, JSON.stringify(row), now],
+      );
+      return { execution: row, invoke: true };
+    });
+  }
+
+  async getActionExecution(executionId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_action_executions WHERE execution_id = $1`, [executionId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiActionExecution) : null;
+  }
+
+  async getExecutionByAuthorization(authorizationId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_action_executions WHERE authorization_id = $1`, [authorizationId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiActionExecution) : null;
+  }
+
+  async findExecutionByIdempotency(applicationId: string, actorId: string, idempotencyKey: string) {
+    await this.ready();
+    const request = await this.pool.query(
+      `SELECT payload FROM ai_action_execution_requests WHERE application_id = $1 AND actor_id = $2 AND idempotency_key = $3`,
+      [applicationId, actorId, idempotencyKey],
+    );
+    if (!request.rows[0]) return null;
+    const req = request.rows[0].payload as DigiAiActionExecutionRequest;
+    return this.getActionExecutionByRequest(req.executionRequestId);
+  }
+
+  private async getActionExecutionByRequest(executionRequestId: string) {
+    const result = await this.pool.query(`SELECT payload FROM ai_action_executions WHERE execution_request_id = $1`, [executionRequestId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiActionExecution) : null;
+  }
+
+  async putActionExecutionReceipt(row: DigiAiActionExecutionReceipt) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_action_execution_receipts (receipt_id, execution_id, payload, created_at)
+       VALUES ($1,$2,$3::jsonb,$4)
+       ON CONFLICT (receipt_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      [row.receiptId, row.executionId, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async getActionExecutionReceipt(receiptId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_action_execution_receipts WHERE receipt_id = $1`, [receiptId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiActionExecutionReceipt) : null;
+  }
+
+  async appendExecutionAudit(row: ExecutionAuditEvent) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_action_execution_audit (event_id, execution_id, event_type, payload, created_at) VALUES ($1,$2,$3,$4::jsonb,$5)`,
+      [row.eventId, row.executionId, row.eventType, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async listExecutionAudit(executionId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_action_execution_audit WHERE execution_id = $1 ORDER BY created_at ASC`, [executionId]);
+    return result.rows.map((row) => row.payload as ExecutionAuditEvent);
   }
 }
 

@@ -197,4 +197,15 @@ export type HealthResponse = {
       enabled: false;
     };
   };
+  actionExecution?: {
+    supported: true;
+    durable: boolean;
+    backend: "memory" | "postgres" | "file";
+    registry: { configured: boolean };
+    realExternalExecutors: { enabled: false };
+    fixtureExecutors: { available: boolean };
+    authorizationRequired: true;
+    unknownOutcomeSupported: true;
+    reconciliationSupported: "fixture";
+  };
 };

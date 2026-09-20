@@ -21,6 +21,9 @@ import { orchestrationLimits } from "./limits.js";
 import { planObjective } from "./planner.js";
 import { strictestPrivacy } from "./privacy.js";
 import { invalidateObjectiveAuthorizations, proposeAction } from "../authority/service.js";
+import { isFixtureActionType } from "../contracts/execution.js";
+import { executeAuthorizedAction, advanceExecution } from "../execution/service.js";
+import type { FixtureMode } from "../contracts/execution.js";
 import { readySteps, validatePlan } from "./validate.js";
 
 const TEXT_LIMIT = 2000;
@@ -164,6 +167,17 @@ export async function cancelObjective(input: {
     if (step.status === "PENDING" || step.status === "WAITING_FOR_HUMAN") {
       await input.store.updateStep(step.stepId, { status: "CANCELLED", completedAt: nowIso(), error: "cancelled" });
     }
+    if (step.status === "WAITING_FOR_ACTION" && step.authorizationId) {
+      const execution = await input.store.getExecutionByAuthorization(step.authorizationId);
+      if (execution && !execution.submittedAt) {
+        execution.status = "CANCELLED";
+        execution.failureCode = "CANCELLED_BEFORE_SUBMISSION";
+        execution.completedAt = nowIso();
+        execution.updatedAt = execution.completedAt;
+        await input.store.putActionExecution(execution);
+        await input.store.updateStep(step.stepId, { status: "CANCELLED", completedAt: execution.completedAt, error: "cancelled" });
+      }
+    }
   }
   await invalidateObjectiveAuthorizations(input.store, objective.objectiveId, input.actor.trustId);
   const next = await input.store.listSteps(objective.objectiveId);
@@ -216,12 +230,13 @@ async function runObjective(
     const ready = [
       ...readySteps(steps),
       ...steps.filter((row) => row.status === "WAITING"),
+      ...steps.filter((row) => row.status === "WAITING_FOR_ACTION"),
       ...steps.filter((row) => row.status === "WAITING_FOR_HUMAN" && row.authorizationId),
     ].slice(0, input.deps.config.orchestrationMaxParallelSteps);
     if (!ready.length) break;
     await Promise.all(ready.map((step) => executeStep(input, objective, step, steps)));
     const after = await input.deps.store.listSteps(objectiveId);
-    if (after.some((row) => row.status === "WAITING" || (row.status === "WAITING_FOR_HUMAN" && !row.authorizationId))) break;
+    if (after.some((row) => row.status === "WAITING" || row.status === "WAITING_FOR_ACTION" || row.status === "UNKNOWN_ACTION_OUTCOME" || (row.status === "WAITING_FOR_HUMAN" && !row.authorizationId))) break;
   }
 
   const latest = (await input.deps.store.getObjective(objectiveId))!;
@@ -244,7 +259,14 @@ async function executeStep(
   step: DigiAiExecutionStep,
   all: DigiAiExecutionStep[],
 ) {
-  if (step.status === "COMPLETED") return;
+  if (step.status === "COMPLETED" || step.status === "UNKNOWN_ACTION_OUTCOME") return;
+  if (step.status === "WAITING_FOR_ACTION" && step.authorizationId) {
+    const execution = await input.deps.store.getExecutionByAuthorization(step.authorizationId);
+    if (execution) {
+      await advanceExecution({ store: input.deps.store, actor: input.actor, caller: input.caller, executionId: execution.executionId });
+    }
+    return;
+  }
   if (step.capability === "ACTION" || step.governedAction) {
     await executeGovernedAction(input, objective, step);
     return;
@@ -387,12 +409,26 @@ async function executeGovernedAction(
     deps: EngineDeps;
     actor: ActorContext;
     caller: CallerApplication;
+    allowFixture: boolean;
   },
   objective: DigiAiObjective,
   step: DigiAiExecutionStep,
 ) {
   if (step.status === "WAITING_FOR_HUMAN" && !step.authorizationId) return;
   if (step.authorizationId) {
+    const intent = step.actionIntentId ? await input.deps.store.getActionIntent(step.actionIntentId) : null;
+    if (intent && isFixtureActionType(intent.actionType) && input.allowFixture) {
+      await executeAuthorizedAction({
+        store: input.deps.store,
+        actor: input.actor,
+        caller: input.caller,
+        actionIntentId: intent.actionIntentId,
+        authorizationId: step.authorizationId,
+        allowFixture: true,
+        fixtureMode: fixtureModeFor(objective.fixtureName),
+      });
+      return;
+    }
     await input.deps.store.updateStep(step.stepId, {
       status: "COMPLETED",
       completedAt: nowIso(),
@@ -429,6 +465,22 @@ async function executeGovernedAction(
     },
   });
   if (proposed.authorization) {
+    if (isFixtureActionType(proposed.intent.actionType) && input.allowFixture) {
+      await input.deps.store.updateStep(step.stepId, {
+        actionIntentId: proposed.intent.actionIntentId,
+        authorizationId: proposed.authorization.authorizationId,
+      });
+      await executeAuthorizedAction({
+        store: input.deps.store,
+        actor: input.actor,
+        caller: input.caller,
+        actionIntentId: proposed.intent.actionIntentId,
+        authorizationId: proposed.authorization.authorizationId,
+        allowFixture: true,
+        fixtureMode: fixtureModeFor(objective.fixtureName),
+      });
+      return;
+    }
     await input.deps.store.updateStep(step.stepId, {
       status: "COMPLETED",
       actionIntentId: proposed.intent.actionIntentId,
@@ -461,9 +513,17 @@ async function executeGovernedAction(
   });
 }
 
+function fixtureModeFor(name?: DigiAiObjective["fixtureName"]): FixtureMode | undefined {
+  if (name === "action-optional-fail" || name === "action-required-fail") return "REMOTE_FAILURE";
+  if (name === "action-unknown") return "UNKNOWN_OUTCOME";
+  return "SUCCESS";
+}
+
 function deriveStatus(objective: DigiAiObjective, steps: DigiAiExecutionStep[]): DigiAiObjective["status"] {
   if (objective.cancelRequested) return "CANCELLED";
   if (steps.some((row) => row.status === "WAITING_FOR_HUMAN")) return "WAITING_FOR_HUMAN";
+  if (steps.some((row) => row.required && row.status === "UNKNOWN_ACTION_OUTCOME")) return "UNKNOWN_ACTION_OUTCOME";
+  if (steps.some((row) => row.status === "WAITING_FOR_ACTION")) return "WAITING_FOR_ACTION";
   if (steps.some((row) => row.status === "WAITING")) return "WAITING";
   if (steps.some((row) => row.status === "RUNNING")) return "RUNNING";
   const requiredFailed = steps.some((row) => row.required && row.status === "FAILED");
@@ -609,6 +669,10 @@ function isFixture(value: string): value is OrchestrationFixture {
     "authority-create",
     "authority-publish",
     "authority-publish-optional",
+    "action-publish-fixture",
+    "action-optional-fail",
+    "action-required-fail",
+    "action-unknown",
   ].includes(value);
 }
 

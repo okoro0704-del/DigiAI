@@ -9,6 +9,7 @@ import { providerHealth } from "../providers/router.js";
 import type { DigiAiStore } from "../store/types.js";
 import { UnboundDrive, type DriveStatus, type SovereignDrive } from "../media/drive.js";
 import { AUTHORITY_POLICY_VERSION } from "../contracts/authority.js";
+import { registryConfigured } from "../execution/registry.js";
 import { commercialPolicyConfigured, listMeteringPolicies } from "../credits/policy.js";
 import { enabledVoiceProfileCount } from "../registry/voices.js";
 import { activePricingVersions } from "../usage/pricing-catalog.js";
@@ -162,6 +163,17 @@ export function buildHealthResponse(
       consequentialAutomaticExecution: {
         enabled: false,
       },
+    },
+    actionExecution: {
+      supported: true,
+      durable: (store?.actionExecutionStatus() ?? ledger).durable,
+      backend: (store?.actionExecutionStatus() ?? ledger).backend,
+      registry: { configured: registryConfigured() },
+      realExternalExecutors: { enabled: false },
+      fixtureExecutors: { available: true },
+      authorizationRequired: true,
+      unknownOutcomeSupported: true,
+      reconciliationSupported: "fixture",
     },
   };
 }

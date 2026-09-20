@@ -22,6 +22,11 @@ export const ACTION_TYPES = [
   "TRANSFER_FINPROVE_VALUE",
   "DEPLOY_SERVICE",
   "DELETE_ASSET",
+  "PUBLISH_FIXTURE_POST",
+  "MESSAGE_FIXTURE",
+  "SPEND_FIXTURE",
+  "DEPLOY_FIXTURE",
+  "DELETE_FIXTURE",
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
@@ -69,7 +74,7 @@ export type AuthorityReason = (typeof AUTHORITY_REASONS)[number];
 export const GRANT_STATUSES = ["active", "revoked", "expired"] as const;
 export type GrantStatus = (typeof GRANT_STATUSES)[number];
 
-export const AUTHORIZATION_STATUSES = ["issued", "consumed", "expired", "invalidated"] as const;
+export const AUTHORIZATION_STATUSES = ["issued", "claimed", "consumed", "expired", "invalidated"] as const;
 export type AuthorizationStatus = (typeof AUTHORIZATION_STATUSES)[number];
 
 export const HUMAN_DECISION_VALUES = ["APPROVE", "DENY"] as const;
@@ -228,6 +233,8 @@ export type DigiAiActionAuthorization = {
   expiresAt?: string;
   status: AuthorizationStatus;
   consumedAt?: string;
+  claimedByExecutionId?: string;
+  claimedAt?: string;
 };
 
 export type AuthorityAuditEvent = {

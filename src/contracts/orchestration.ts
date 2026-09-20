@@ -8,6 +8,8 @@ export const OBJECTIVE_STATUSES = [
   "RUNNING",
   "WAITING",
   "WAITING_FOR_HUMAN",
+  "WAITING_FOR_ACTION",
+  "UNKNOWN_ACTION_OUTCOME",
   "COMPLETED",
   "PARTIAL",
   "FAILED",
@@ -15,7 +17,7 @@ export const OBJECTIVE_STATUSES = [
 ] as const;
 export type ObjectiveStatus = (typeof OBJECTIVE_STATUSES)[number];
 
-export const STEP_STATUSES = ["PENDING", "RUNNING", "WAITING", "WAITING_FOR_HUMAN", "COMPLETED", "FAILED", "CANCELLED", "SKIPPED"] as const;
+export const STEP_STATUSES = ["PENDING", "RUNNING", "WAITING", "WAITING_FOR_HUMAN", "WAITING_FOR_ACTION", "UNKNOWN_ACTION_OUTCOME", "COMPLETED", "FAILED", "CANCELLED", "SKIPPED"] as const;
 export type StepStatus = (typeof STEP_STATUSES)[number];
 
 export const OUTPUT_KINDS = ["TEXT", "STRUCTURED_DATA", "MEDIA", "ASSET_REFERENCE"] as const;
@@ -35,7 +37,11 @@ export type OrchestrationFixture =
   | "cancel"
   | "authority-create"
   | "authority-publish"
-  | "authority-publish-optional";
+  | "authority-publish-optional"
+  | "action-publish-fixture"
+  | "action-optional-fail"
+  | "action-required-fail"
+  | "action-unknown";
 
 export type BindingSource = {
   from: string;

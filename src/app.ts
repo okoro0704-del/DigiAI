@@ -45,6 +45,14 @@ import {
 } from "./authority/service.js";
 import { runOrchestrationAcceptance } from "./orchestration/acceptance.js";
 import { advanceObjective, cancelObjective, createObjective, inspectObjective, parseObjectiveBody } from "./orchestration/engine.js";
+import {
+  advanceExecution,
+  cancelExecution,
+  executeAuthorizedAction,
+  inspectExecution,
+  parseExecuteBody,
+  reconcileExecution,
+} from "./execution/service.js";
 import { isOperatorCaller, readUsageReceipt, readUsageSummary, scopedLedgerQuery } from "./usage/query.js";
 import { renderDigiAiPage } from "./ui/page.js";
 
@@ -615,6 +623,89 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         grantId: String((req.params as { grantId?: string }).grantId || ""),
       });
       return reply.send({ ok: true, service: "digi-ai", grant });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/v1/actions/:actionIntentId/execute", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const operator = isOperatorCaller(config, identity.caller);
+      const allowFixture = !config.isProd || operator;
+      const body = parseExecuteBody(req.body, allowFixture);
+      const result = await executeAuthorizedAction({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        actionIntentId: String((req.params as { actionIntentId?: string }).actionIntentId || ""),
+        allowFixture,
+        ...body,
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get("/v1/action-executions/:executionId", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const result = await inspectExecution({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        executionId: String((req.params as { executionId?: string }).executionId || ""),
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/v1/action-executions/:executionId/advance", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const result = await advanceExecution({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        executionId: String((req.params as { executionId?: string }).executionId || ""),
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/v1/action-executions/:executionId/cancel", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const result = await cancelExecution({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        executionId: String((req.params as { executionId?: string }).executionId || ""),
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/action-executions/:executionId/reconcile", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      if (config.isProd && !isOperatorCaller(config, identity.caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required to reconcile action executions.");
+      }
+      const result = await reconcileExecution({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        executionId: String((req.params as { executionId?: string }).executionId || ""),
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
     } catch (err) {
       return sendError(reply, err);
     }

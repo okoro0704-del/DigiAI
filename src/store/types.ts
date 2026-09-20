@@ -20,6 +20,12 @@ import type {
   DigiAiHumanDecisionRequest,
 } from "../contracts/authority.js";
 import type { DigiAiExecutionPlan, DigiAiExecutionStep, DigiAiObjective } from "../contracts/orchestration.js";
+import type {
+  DigiAiActionExecution,
+  DigiAiActionExecutionReceipt,
+  DigiAiActionExecutionRequest,
+  ExecutionAuditEvent,
+} from "../contracts/execution.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus, UsageAggregate } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
 
@@ -174,4 +180,23 @@ export interface DigiAiStore {
   }): Promise<DigiAiActionAuthorization>;
   appendAuthorityAudit(row: AuthorityAuditEvent): Promise<void>;
   listAuthorityAudit(query?: { actionIntentId?: string; grantId?: string }): Promise<AuthorityAuditEvent[]>;
+  actionExecutionStatus(): LedgerStatus;
+  claimActionAuthorization(input: {
+    authorizationId: string;
+    actorId: string;
+    applicationId: string;
+    tenantId?: string;
+    now: string;
+    execution: DigiAiActionExecution;
+  }): Promise<{ authorization: DigiAiActionAuthorization; execution: DigiAiActionExecution; created: boolean }>;
+  putActionExecutionRequest(row: DigiAiActionExecutionRequest): Promise<void>;
+  putActionExecution(row: DigiAiActionExecution): Promise<void>;
+  beginActionExecution(executionId: string, now: string, opts?: { resume?: boolean }): Promise<{ execution: DigiAiActionExecution; invoke: boolean }>;
+  getActionExecution(executionId: string): Promise<DigiAiActionExecution | null>;
+  getExecutionByAuthorization(authorizationId: string): Promise<DigiAiActionExecution | null>;
+  findExecutionByIdempotency(applicationId: string, actorId: string, idempotencyKey: string): Promise<DigiAiActionExecution | null>;
+  putActionExecutionReceipt(row: DigiAiActionExecutionReceipt): Promise<void>;
+  getActionExecutionReceipt(receiptId: string): Promise<DigiAiActionExecutionReceipt | null>;
+  appendExecutionAudit(row: ExecutionAuditEvent): Promise<void>;
+  listExecutionAudit(executionId: string): Promise<ExecutionAuditEvent[]>;
 }
