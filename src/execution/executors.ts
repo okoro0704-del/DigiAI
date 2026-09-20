@@ -1,5 +1,8 @@
+import type { ActorContext, CallerApplication } from "../contracts/actor.js";
 import type { ActionClass, ActionParameters, ActionType } from "../contracts/authority.js";
-import type { ExecutorCapability, FixtureMode } from "../contracts/execution.js";
+import type { DigiAiActionExecution, ExecutorCapability, FixtureMode } from "../contracts/execution.js";
+import { invokeTool, mapToolToExecutor } from "../connectors/service.js";
+import type { DigiAiStore } from "../store/types.js";
 
 export type ExecutorContext = {
   executionId: string;
@@ -10,7 +13,12 @@ export type ExecutorContext = {
   target: { resourceType: string; resourceId: string };
   fixtureMode?: FixtureMode;
   resume?: boolean;
+  reconcile?: boolean;
   existingExternalReference?: string;
+  store?: DigiAiStore;
+  actor?: ActorContext;
+  caller?: CallerApplication;
+  execution?: DigiAiActionExecution;
 };
 
 export type ExecutorResult = {
@@ -146,9 +154,33 @@ function makeFixture(id: string, actionType: ActionType, actionClass: ActionClas
     supportedActionClasses: [actionClass],
     capabilities: extra.length ? extra : ["NATIVE_IDEMPOTENCY", "RECONCILIATION"],
     async execute(context) {
+      if (context.store && context.actor && context.caller && context.execution) {
+        fixtureStats.invocations += 1;
+        fixtureStats.lastExternalKey = context.externalIdempotencyKey;
+        const result = await invokeTool({
+          store: context.store,
+          execution: context.execution,
+          actor: context.actor,
+          caller: context.caller,
+        });
+        const mapped = mapToolToExecutor(result);
+        if (mapped.submitted) recordEffect(context.externalIdempotencyKey);
+        return mapped;
+      }
       return runMode(context, kind);
     },
     async resume(context) {
+      if (context.store && context.actor && context.caller && context.execution) {
+        fixtureStats.invocations += 1;
+        const result = await invokeTool({
+          store: context.store,
+          execution: context.execution,
+          actor: context.actor,
+          caller: context.caller,
+          resume: true,
+        });
+        return mapToolToExecutor(result);
+      }
       return runMode({ ...context, resume: true }, kind);
     },
     async inspect(context) {
@@ -165,6 +197,16 @@ function makeFixture(id: string, actionType: ActionType, actionClass: ActionClas
       return { outcome: "UNKNOWN_OUTCOME", submitted: false, invoked: false, failureCode: "UNKNOWN_REMOTE_OUTCOME" };
     },
     async reconcile(context) {
+      if (context.store && context.actor && context.caller && context.execution) {
+        const result = await invokeTool({
+          store: context.store,
+          execution: context.execution,
+          actor: context.actor,
+          caller: context.caller,
+          reconcile: true,
+        });
+        return mapToolToExecutor(result);
+      }
       if (!context.existingExternalReference) {
         return { outcome: "UNKNOWN_OUTCOME", submitted: true, invoked: false, failureCode: "UNKNOWN_REMOTE_OUTCOME" };
       }

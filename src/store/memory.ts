@@ -18,6 +18,7 @@ import type {
   DigiAiHumanDecision,
   DigiAiHumanDecisionRequest,
 } from "../contracts/authority.js";
+import type { DigiAiToolInvocation, ToolAuditEvent } from "../contracts/connectors.js";
 import type {
   DigiAiActionExecution,
   DigiAiActionExecutionReceipt,
@@ -64,6 +65,8 @@ export class MemoryStore implements DigiAiStore {
   readonly actionExecutionRequests: DigiAiActionExecutionRequest[] = [];
   readonly actionExecutionReceipts: DigiAiActionExecutionReceipt[] = [];
   readonly executionAudit: ExecutionAuditEvent[] = [];
+  readonly toolInvocations: DigiAiToolInvocation[] = [];
+  readonly toolAudit: ToolAuditEvent[] = [];
   private writable = true;
   private readonly creditLocks = new Map<string, Promise<void>>();
   private readonly authorityLocks = new Map<string, Promise<void>>();
@@ -761,6 +764,45 @@ export class MemoryStore implements DigiAiStore {
 
   async listExecutionAudit(executionId: string) {
     return this.executionAudit.filter((row) => row.executionId === executionId);
+  }
+
+  toolConnectorStatus(): LedgerStatus {
+    return this.ledgerStatus();
+  }
+
+  async putToolInvocation(row: DigiAiToolInvocation) {
+    const idx = this.toolInvocations.findIndex((item) => item.toolInvocationId === row.toolInvocationId);
+    if (idx >= 0) this.toolInvocations[idx] = row;
+    else this.toolInvocations.push(row);
+  }
+
+  async beginToolInvocation(row: DigiAiToolInvocation) {
+    return this.withAuthorityLock(`tool:${row.executionId}`, async () => {
+      const existing = this.toolInvocations.find((item) => item.executionId === row.executionId);
+      if (existing) {
+        if (existing.status === "PENDING") return { invocation: existing, invoke: true };
+        return { invocation: existing, invoke: false };
+      }
+      row.status = "PENDING";
+      this.toolInvocations.push(row);
+      return { invocation: row, invoke: true };
+    });
+  }
+
+  async getToolInvocation(toolInvocationId: string) {
+    return this.toolInvocations.find((row) => row.toolInvocationId === toolInvocationId) ?? null;
+  }
+
+  async getToolInvocationByExecution(executionId: string) {
+    return this.toolInvocations.find((row) => row.executionId === executionId) ?? null;
+  }
+
+  async appendToolAudit(row: ToolAuditEvent) {
+    this.toolAudit.push(row);
+  }
+
+  async listToolAudit(toolInvocationId: string) {
+    return this.toolAudit.filter((row) => row.toolInvocationId === toolInvocationId);
   }
 
   private async withAuthorityLock<T>(key: string, fn: () => Promise<T>): Promise<T> {

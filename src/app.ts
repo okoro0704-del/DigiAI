@@ -46,6 +46,11 @@ import {
 import { runOrchestrationAcceptance } from "./orchestration/acceptance.js";
 import { advanceObjective, cancelObjective, createObjective, inspectObjective, parseObjectiveBody } from "./orchestration/engine.js";
 import {
+  inspectToolInvocation,
+  listToolCatalog,
+  reconcileToolInvocation,
+} from "./connectors/service.js";
+import {
   advanceExecution,
   cancelExecution,
   executeAuthorizedAction,
@@ -686,6 +691,48 @@ export function buildApp(config: AppConfig, options: DigiAiAppOptions = {}) {
         actor: identity.actor,
         caller: identity.caller,
         executionId: String((req.params as { executionId?: string }).executionId || ""),
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get("/v1/tools/catalog", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      return reply.send({ ok: true, service: "digi-ai", catalog: listToolCatalog(), grantsAuthority: false });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get("/internal/tool-invocations/:toolInvocationId", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      const result = await inspectToolInvocation({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        toolInvocationId: String((req.params as { toolInvocationId?: string }).toolInvocationId || ""),
+      });
+      return reply.send({ ok: true, service: "digi-ai", ...result });
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post("/internal/tool-invocations/:toolInvocationId/reconcile", async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const identity = await resolveRequestIdentity({ config, headers: req.headers, url: req.url, resolver });
+      if (config.isProd && !isOperatorCaller(config, identity.caller)) {
+        throw new DigiAiError(403, "operator_required", "Operator access is required to reconcile tool invocations.");
+      }
+      const result = await reconcileToolInvocation({
+        store,
+        actor: identity.actor,
+        caller: identity.caller,
+        toolInvocationId: String((req.params as { toolInvocationId?: string }).toolInvocationId || ""),
       });
       return reply.send({ ok: true, service: "digi-ai", ...result });
     } catch (err) {

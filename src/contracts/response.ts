@@ -208,4 +208,14 @@ export type HealthResponse = {
     unknownOutcomeSupported: true;
     reconciliationSupported: "fixture";
   };
+  toolConnectors?: {
+    supported: true;
+    registry: { configured: boolean };
+    policy: { loaded: true; version: string };
+    credentialBackend: { configured: false };
+    realConsequentialWrites: { enabled: false };
+    fixtures: { enabled: true };
+    unknownOutcome: { supported: true };
+    reconciliation: { supported: true };
+  };
 };

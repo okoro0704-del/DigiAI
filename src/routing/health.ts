@@ -9,6 +9,8 @@ import { providerHealth } from "../providers/router.js";
 import type { DigiAiStore } from "../store/types.js";
 import { UnboundDrive, type DriveStatus, type SovereignDrive } from "../media/drive.js";
 import { AUTHORITY_POLICY_VERSION } from "../contracts/authority.js";
+import { TOOL_CONNECTOR_POLICY_VERSION } from "../contracts/connectors.js";
+import { connectorRegistryConfigured } from "../connectors/registry.js";
 import { registryConfigured } from "../execution/registry.js";
 import { commercialPolicyConfigured, listMeteringPolicies } from "../credits/policy.js";
 import { enabledVoiceProfileCount } from "../registry/voices.js";
@@ -174,6 +176,16 @@ export function buildHealthResponse(
       authorizationRequired: true,
       unknownOutcomeSupported: true,
       reconciliationSupported: "fixture",
+    },
+    toolConnectors: {
+      supported: true,
+      registry: { configured: connectorRegistryConfigured() },
+      policy: { loaded: true, version: TOOL_CONNECTOR_POLICY_VERSION },
+      credentialBackend: { configured: false },
+      realConsequentialWrites: { enabled: false },
+      fixtures: { enabled: true },
+      unknownOutcome: { supported: true },
+      reconciliation: { supported: true },
     },
   };
 }

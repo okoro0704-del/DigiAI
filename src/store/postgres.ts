@@ -17,6 +17,7 @@ import type {
   DigiAiHumanDecision,
   DigiAiHumanDecisionRequest,
 } from "../contracts/authority.js";
+import type { DigiAiToolInvocation, ToolAuditEvent } from "../contracts/connectors.js";
 import type {
   DigiAiActionExecution,
   DigiAiActionExecutionReceipt,
@@ -243,6 +244,22 @@ CREATE TABLE IF NOT EXISTS ai_action_execution_receipts (
 CREATE TABLE IF NOT EXISTS ai_action_execution_audit (
   event_id TEXT PRIMARY KEY,
   execution_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_tool_invocations (
+  tool_invocation_id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL UNIQUE,
+  actor_id TEXT NOT NULL,
+  application_id TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ai_tool_invocation_audit (
+  event_id TEXT PRIMARY KEY,
+  tool_invocation_id TEXT NOT NULL,
   event_type TEXT NOT NULL,
   payload JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1319,6 +1336,63 @@ export class PostgresStore implements DigiAiStore {
     await this.ready();
     const result = await this.pool.query(`SELECT payload FROM ai_action_execution_audit WHERE execution_id = $1 ORDER BY created_at ASC`, [executionId]);
     return result.rows.map((row) => row.payload as ExecutionAuditEvent);
+  }
+
+  toolConnectorStatus(): LedgerStatus {
+    return this.ledgerStatus();
+  }
+
+  async putToolInvocation(row: DigiAiToolInvocation) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_tool_invocations (tool_invocation_id, execution_id, actor_id, application_id, payload, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7)
+       ON CONFLICT (tool_invocation_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`,
+      [row.toolInvocationId, row.executionId, row.actorId, row.applicationId, JSON.stringify(row), row.createdAt, row.updatedAt],
+    );
+  }
+
+  async beginToolInvocation(row: DigiAiToolInvocation) {
+    return this.withCreditTx(async (client) => {
+      const found = await client.query(`SELECT payload FROM ai_tool_invocations WHERE execution_id = $1 FOR UPDATE`, [row.executionId]);
+      if (found.rows[0]) {
+        const existing = found.rows[0].payload as DigiAiToolInvocation;
+        return { invocation: existing, invoke: existing.status === "PENDING" };
+      }
+      row.status = "PENDING";
+      await client.query(
+        `INSERT INTO ai_tool_invocations (tool_invocation_id, execution_id, actor_id, application_id, payload, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7)`,
+        [row.toolInvocationId, row.executionId, row.actorId, row.applicationId, JSON.stringify(row), row.createdAt, row.updatedAt],
+      );
+      return { invocation: row, invoke: true };
+    });
+  }
+
+  async getToolInvocation(toolInvocationId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_tool_invocations WHERE tool_invocation_id = $1`, [toolInvocationId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiToolInvocation) : null;
+  }
+
+  async getToolInvocationByExecution(executionId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_tool_invocations WHERE execution_id = $1`, [executionId]);
+    return result.rows[0] ? (result.rows[0].payload as DigiAiToolInvocation) : null;
+  }
+
+  async appendToolAudit(row: ToolAuditEvent) {
+    await this.ready();
+    await this.pool.query(
+      `INSERT INTO ai_tool_invocation_audit (event_id, tool_invocation_id, event_type, payload, created_at) VALUES ($1,$2,$3,$4::jsonb,$5)`,
+      [row.eventId, row.toolInvocationId, row.eventType, JSON.stringify(row), row.createdAt],
+    );
+  }
+
+  async listToolAudit(toolInvocationId: string) {
+    await this.ready();
+    const result = await this.pool.query(`SELECT payload FROM ai_tool_invocation_audit WHERE tool_invocation_id = $1 ORDER BY created_at ASC`, [toolInvocationId]);
+    return result.rows.map((row) => row.payload as ToolAuditEvent);
   }
 }
 

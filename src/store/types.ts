@@ -26,6 +26,7 @@ import type {
   DigiAiActionExecutionRequest,
   ExecutionAuditEvent,
 } from "../contracts/execution.js";
+import type { DigiAiToolInvocation, ToolAuditEvent } from "../contracts/connectors.js";
 import type { LedgerEntry, LedgerQuery, LedgerStatus, UsageAggregate } from "../contracts/ledger.js";
 import type { RequestReceipt, UsageRecord } from "../contracts/usage.js";
 
@@ -199,4 +200,11 @@ export interface DigiAiStore {
   getActionExecutionReceipt(receiptId: string): Promise<DigiAiActionExecutionReceipt | null>;
   appendExecutionAudit(row: ExecutionAuditEvent): Promise<void>;
   listExecutionAudit(executionId: string): Promise<ExecutionAuditEvent[]>;
+  toolConnectorStatus(): LedgerStatus;
+  putToolInvocation(row: DigiAiToolInvocation): Promise<void>;
+  beginToolInvocation(row: DigiAiToolInvocation): Promise<{ invocation: DigiAiToolInvocation; invoke: boolean }>;
+  getToolInvocation(toolInvocationId: string): Promise<DigiAiToolInvocation | null>;
+  getToolInvocationByExecution(executionId: string): Promise<DigiAiToolInvocation | null>;
+  appendToolAudit(row: ToolAuditEvent): Promise<void>;
+  listToolAudit(toolInvocationId: string): Promise<ToolAuditEvent[]>;
 }

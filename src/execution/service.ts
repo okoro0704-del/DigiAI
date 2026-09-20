@@ -15,6 +15,7 @@ import { strongestClass } from "../authority/policy.js";
 import { clip, newId, nowIso } from "../lib/crypto.js";
 import { DigiAiError } from "../lib/http.js";
 import type { DigiAiStore } from "../store/types.js";
+import { rejectConnectorSpoof } from "../connectors/service.js";
 import { resolveExecutor } from "./registry.js";
 import { validateActionParameters } from "./validate.js";
 
@@ -86,7 +87,7 @@ export async function executeAuthorizedAction(input: {
     if (existing.status === "SUCCEEDED" || existing.status === "FAILED" || existing.status === "CANCELLED" || existing.status === "UNKNOWN_OUTCOME" || existing.status === "WAITING") {
       return inspectSafe(existing, await receiptOf(input.store, existing));
     }
-    return invokeIfNeeded({ store: input.store, execution: existing, actor: input.actor, now });
+    return invokeIfNeeded({ store: input.store, execution: existing, actor: input.actor, caller: input.caller, now });
   }
 
   const executionId = newId("aex");
@@ -146,7 +147,7 @@ export async function executeAuthorizedAction(input: {
   await audit(input.store, { eventType: "AUTHORIZATION_CLAIMED", executionId: claimed.execution.executionId, authorizationId: authorization.authorizationId, actorId: request.actorId });
   await audit(input.store, { eventType: "EXECUTOR_RESOLVED", executionId: claimed.execution.executionId, status: claimed.execution.status });
   if (input.deferInvocation) return inspectSafe(claimed.execution);
-  return invokeIfNeeded({ store: input.store, execution: claimed.execution, actor: input.actor, now });
+  return invokeIfNeeded({ store: input.store, execution: claimed.execution, actor: input.actor, caller: input.caller, now });
 }
 
 export async function advanceExecution(input: { store: DigiAiStore; actor: ActorContext; caller: CallerApplication; executionId: string; now?: string }) {
@@ -157,7 +158,7 @@ export async function advanceExecution(input: { store: DigiAiStore; actor: Actor
   if (execution.status === "UNKNOWN_OUTCOME") {
     return inspectSafe(execution, await receiptOf(input.store, execution));
   }
-  return invokeIfNeeded({ store: input.store, execution, actor: input.actor, now: input.now ?? nowIso(), resume: execution.status === "WAITING" || Boolean(execution.submittedAt) });
+  return invokeIfNeeded({ store: input.store, execution, actor: input.actor, caller: input.caller, now: input.now ?? nowIso(), resume: execution.status === "WAITING" || Boolean(execution.submittedAt) });
 }
 
 export async function cancelExecution(input: { store: DigiAiStore; actor: ActorContext; caller: CallerApplication; executionId: string }) {
@@ -201,6 +202,11 @@ export async function reconcileExecution(input: { store: DigiAiStore; actor: Act
     target: execution.target,
     existingExternalReference: execution.externalReference,
     fixtureMode: execution.fixtureMode,
+    store: input.store,
+    actor: input.actor,
+    caller: input.caller,
+    execution,
+    reconcile: true,
   });
   return persistOutcome({ store: input.store, execution, result, actor: input.actor, reconciled: true });
 }
@@ -210,7 +216,7 @@ export async function inspectExecution(input: { store: DigiAiStore; actor: Actor
   return inspectSafe(execution, await receiptOf(input.store, execution));
 }
 
-async function invokeIfNeeded(input: { store: DigiAiStore; execution: DigiAiActionExecution; actor: ActorContext; now: string; resume?: boolean }) {
+async function invokeIfNeeded(input: { store: DigiAiStore; execution: DigiAiActionExecution; actor: ActorContext; caller: CallerApplication; now: string; resume?: boolean }) {
   let execution = input.execution;
   if (execution.status === "UNKNOWN_OUTCOME" && !input.resume) return inspectSafe(execution, await receiptOf(input.store, execution));
   const authorization = await input.store.getActionAuthorization(execution.authorizationId);
@@ -244,6 +250,10 @@ async function invokeIfNeeded(input: { store: DigiAiStore; execution: DigiAiActi
         fixtureMode: execution.fixtureMode,
         resume: true,
         existingExternalReference: execution.externalReference,
+        store: input.store,
+        actor: input.actor,
+        caller: input.caller,
+        execution,
       })
     : await executor.execute({
         executionId: execution.executionId,
@@ -253,6 +263,10 @@ async function invokeIfNeeded(input: { store: DigiAiStore; execution: DigiAiActi
         parameters: execution.parameters,
         target: execution.target,
         fixtureMode: execution.fixtureMode,
+        store: input.store,
+        actor: input.actor,
+        caller: input.caller,
+        execution,
       });
   return persistOutcome({ store: input.store, execution, result, actor: input.actor });
 }
@@ -266,6 +280,12 @@ async function persistOutcome(input: {
 }) {
   const now = nowIso();
   const execution = input.execution;
+  const tool = await input.store.getToolInvocationByExecution(execution.executionId);
+  if (tool) {
+    execution.toolInvocationId = tool.toolInvocationId;
+    execution.connectorId = tool.connectorId;
+    execution.operationId = tool.operationId;
+  }
   if (input.result.submitted) execution.submittedAt = execution.submittedAt ?? now;
   execution.externalReference = input.result.externalReference ?? execution.externalReference;
   execution.resultReference = input.result.resultReference ?? execution.resultReference;
@@ -401,6 +421,9 @@ function inspectSafe(execution: DigiAiActionExecution, receipt?: DigiAiActionExe
     executorId: execution.executorId,
     executorVersion: execution.executorVersion,
     actionSchemaVersion: execution.actionSchemaVersion,
+    toolInvocationId: execution.toolInvocationId,
+    connectorId: execution.connectorId,
+    operationId: execution.operationId,
     createdAt: execution.createdAt,
     completedAt: execution.completedAt,
     executed: execution.status === "SUCCEEDED",
@@ -452,6 +475,7 @@ export function parseExecuteBody(raw: unknown, allowFixture: boolean) {
   if ("actorId" in body || "tenantId" in body || "applicationId" in body || "executorId" in body || "executorVersion" in body || "receiptStatus" in body || "externalReference" in body) {
     throw new DigiAiError(400, "invalid_request", "Identity and executor fields are reserved to Digi AI.");
   }
+  rejectConnectorSpoof(body);
   if ("target" in body) throw new DigiAiError(403, "PARAMETER_MISMATCH", "Execution target is taken from the authorized action intent.");
   return {
     authorizationId: typeof body.authorizationId === "string" ? body.authorizationId : undefined,
